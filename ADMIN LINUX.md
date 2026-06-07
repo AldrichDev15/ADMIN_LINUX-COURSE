@@ -1,5 +1,5 @@
 # 1. Iniciando el sistema
-
+---
 ## Proceso de arranque
 
 Al encender la máquina se ejecuta la siguiente secuencia:
@@ -267,7 +267,7 @@ make install
 ---
 
 # 2. Kernel de Linux
-
+---
 ## ¿Qué es el kernel?
 
 El kernel sirve de puente entre el hardware y el resto de funciones del sistema operativo (sistema de ficheros, acceso a la red, gestión de procesos, etc.).
@@ -501,44 +501,74 @@ Linux admite una gran variedad de sistemas de ficheros que pueden convivir en di
 
 ## Montar un sistema de ficheros
 
-En Linux/Unix existe un único árbol de directorios. No hay letras de unidad como en Windows. **Montar** es la acción de integrar el sistema de ficheros de un dispositivo dentro de ese árbol, haciéndolo accesible desde un directorio llamado **punto de montaje**.
+En Linux/Unix existe un único árbol de directorios. No hay letras de unidad como en Windows. **Montar** es la acción de integrar un sistema de ficheros dentro de ese árbol, haciéndolo accesible desde un directorio llamado **punto de montaje**.
 
-El punto de montaje debe existir y, en la práctica, estar vacío antes del montaje (cualquier contenido previo quedará oculto mientras el dispositivo esté montado).
+> **Importante:** Antes de poder montar una partición nueva, esta debe contener un sistema de ficheros válido. Normalmente primero se crea una partición y después se formatea con herramientas como `mkfs.ext3`, `mkfs.ext4`, `mkfs.xfs`, etc.
+
+Ejemplo:
+
+```bash
+# Crear un sistema de ficheros ext4
+mkfs.ext4 /dev/sdb1
+
+# Crear el punto de montaje
+mkdir -p /mnt/datos
+
+# Montar el sistema de ficheros
+mount /dev/sdb1 /mnt/datos
+```
+
+El punto de montaje debe existir previamente. Si contiene archivos, estos quedarán ocultos mientras el sistema de ficheros permanezca montado.
 
 ### Comando `mount` y `umount`
 
 ```bash
-mount <dispositivo> <punto_de_montaje>        # Monta un sistema de ficheros
-mount -t ext4 /dev/sdb1 /mnt/datos           # Especificando el tipo explícitamente
-mount -o ro /dev/sdb1 /mnt/datos             # Montaje en solo lectura
-umount <punto_de_montaje>                     # Desmonta el sistema de ficheros
+mount <dispositivo> <punto_de_montaje>       # Monta un sistema de ficheros
+mount -t ext4 /dev/sdb1 /mnt/datos          # Especificando el tipo explícitamente
+mount -o ro /dev/sdb1 /mnt/datos            # Montaje en solo lectura
+
+umount <punto_de_montaje>                    # Desmonta el sistema de ficheros
 umount /dev/sdb1                             # También puede usarse el dispositivo
 ```
 
+Si no se especifica `-t`, `mount` intentará detectar automáticamente el tipo de sistema de ficheros.
+
+También es posible montar entradas definidas en `/etc/fstab`:
+
+```bash
+mount /mnt/datos     # Monta la entrada correspondiente de fstab
+mount -a             # Monta todas las entradas válidas de fstab
+```
+
+`mount -a` es especialmente útil para comprobar cambios en `/etc/fstab` antes de reiniciar el sistema.
+
 Opciones de montaje más comunes (se pasan con `-o`):
 
-| Opción | Descripción |
+|Opción|Descripción|
 |---|---|
-| `ro` / `rw` | Solo lectura / lectura y escritura |
-| `noexec` | Impide ejecutar binarios en esa partición |
-| `nosuid` | Ignora los bits SUID/SGID |
-| `noatime` | No actualiza el tiempo de acceso al leer ficheros (mejora el rendimiento) |
-| `defaults` | Equivale a `rw,suid,dev,exec,auto,nouser,async` |
-| `nofail` | No provoca un error de arranque si el dispositivo no está disponible |
+|`ro` / `rw`|Solo lectura / lectura y escritura|
+|`noexec`|Impide ejecutar binarios en esa partición|
+|`nosuid`|Ignora los bits SUID/SGID|
+|`nodev`|Ignora archivos especiales de dispositivo|
+|`noatime`|No actualiza el tiempo de acceso al leer ficheros (mejora el rendimiento)|
+|`relatime`|Actualiza `atime` solo cuando es necesario (comportamiento habitual en sistemas modernos)|
+|`defaults`|Equivale aproximadamente a `rw,suid,dev,exec,auto,nouser,async`|
+|`nofail`|No provoca un error de arranque si el dispositivo no está disponible|
 
 Para ver los sistemas de ficheros actualmente montados:
 
 ```bash
-df -h          # Muestra espacio usado y disponible en cada sistema montado
+findmnt        # Vista jerárquica recomendada
 mount          # Lista todos los montajes activos
-findmnt        # Vista jerárquica más legible de los montajes activos
+cat /proc/mounts
+df -h          # Espacio usado y disponible en cada sistema montado
 ```
 
 ---
 
 ### Montaje permanente: `/etc/fstab`
 
-El fichero `/etc/fstab` controla qué sistemas de ficheros se montan automáticamente en el arranque. Referencia oficial: [`man 5 fstab`](https://man7.org/linux/man-pages/man5/fstab.5.html)
+El fichero `/etc/fstab` controla qué sistemas de ficheros pueden montarse automáticamente durante el arranque o mediante `mount`.
 
 Cada línea tiene **seis campos** separados por espacios o tabulaciones:
 
@@ -549,21 +579,31 @@ Cada línea tiene **seis campos** separados por espacios o tabulaciones:
 Ejemplo real:
 
 ```
-UUID=9a8b7c6d-5e4f-3210-abcd-ef1234 /        ext4  errors=remount-ro  0  1
-UUID=ABC1-DEF2                       /boot/efi vfat  umask=0077         0  1
-/swapfile                            none      swap  sw                 0  0
+UUID=9a8b7c6d-5e4f-3210-abcd-ef1234 /          ext4  errors=remount-ro  0  1
+UUID=ABC1-DEF2                    /boot/efi   vfat  umask=0077         0  1
+/swapfile                         none        swap  sw                 0  0
 ```
 
 Descripción de cada campo:
 
-| Campo | Descripción |
+|Campo|Descripción|
 |---|---|
-| **Dispositivo** | Identificador del dispositivo. Se recomienda usar `UUID=<valor>` en lugar del nombre de dispositivo (`/dev/sda1`) para evitar problemas si cambia el orden de detección de discos |
-| **Punto de montaje** | Directorio donde se montará el sistema de ficheros. Para swap se usa `none` |
-| **Tipo de FS** | Sistema de ficheros: `ext4`, `xfs`, `btrfs`, `vfat`, `swap`, `nfs`, etc. |
-| **Opciones** | Opciones de montaje separadas por comas (ver tabla anterior). `defaults` es el valor más habitual |
-| **Dump** | `1` activa las copias de seguridad mediante la utilidad `dump` (prácticamente obsoleta); `0` la desactiva. **Casi siempre se pone `0`** |
-| **fsck** | Orden de comprobación con `fsck` al arrancar: `0` = no comprobar, `1` = comprobar primero (solo para `/`), `2` = comprobar después. XFS, Btrfs y sistemas de red deben usar `0` |
+|**Dispositivo**|Identificador del dispositivo. Se recomienda usar `UUID=<valor>` o `LABEL=<valor>` en lugar del nombre de dispositivo (`/dev/sda1`) para evitar problemas si cambia el orden de detección de discos|
+|**Punto de montaje**|Directorio donde se montará el sistema de ficheros. Para swap se usa `none`|
+|**Tipo de FS**|Sistema de ficheros: `ext4`, `xfs`, `btrfs`, `vfat`, `swap`, `nfs`, etc.|
+|**Opciones**|Opciones de montaje separadas por comas. `defaults` es el valor más habitual|
+|**Dump**|`1` activa las copias de seguridad mediante la utilidad `dump` (prácticamente obsoleta); `0` la desactiva. Casi siempre se usa `0`|
+|**fsck**|Orden de comprobación con `fsck` al arrancar|
+
+Valores habituales para `fsck`:
+
+|Valor|Significado|
+|---|---|
+|`0`|No comprobar|
+|`1`|Comprobar primero (normalmente solo para `/`)|
+|`2`|Comprobar después de los sistemas marcados con `1`|
+
+XFS, Btrfs y la mayoría de sistemas de ficheros de red suelen utilizar `0` porque no emplean comprobaciones mediante `fsck` de la forma tradicional.
 
 Para obtener el UUID de un dispositivo:
 
@@ -573,8 +613,33 @@ blkid /dev/sdb1        # Solo para un dispositivo concreto
 lsblk -f               # Vista alternativa con árbol de particiones
 ```
 
-> **Advertencia:** Un `/etc/fstab` mal configurado puede impedir que el sistema arranque. Es recomendable hacer una copia de seguridad antes de editarlo y probar los cambios con `mount -a` sin reiniciar.
+---
 
+### Flujo habitual con una partición nueva
+
+```bash
+# 1. Crear la partición (fdisk, gdisk, parted, etc.)
+
+# 2. Crear el sistema de ficheros
+mkfs.ext4 /dev/sdb1
+
+# 3. Crear el punto de montaje
+mkdir -p /mnt/datos
+
+# 4. Montar el sistema de ficheros
+mount /dev/sdb1 /mnt/datos
+
+# 5. Obtener el UUID
+blkid /dev/sdb1
+
+# 6. Añadir una entrada en /etc/fstab
+UUID=<uuid> /mnt/datos ext4 defaults 0 2
+
+# 7. Comprobar la configuración
+mount -a
+```
+
+> **Advertencia:** Un `/etc/fstab` mal configurado puede impedir que el sistema arranque correctamente. Es recomendable hacer una copia de seguridad antes de editarlo y verificar los cambios con `mount -a` sin reiniciar.
 ---
 
 ### Automontadores
@@ -830,4 +895,412 @@ udevadm control --reload-rules && udevadm trigger  # Recarga y aplica las reglas
 
 > **Nota:** `udev` está integrado en `systemd` desde la versión 183. El demonio se gestiona como una unidad de systemd: `systemctl status systemd-udevd`.
 
+## Ejercicio: Creación de un sistema de ficheros en un nuevo disco
+`mkfs.ext3 -m 1 /dev/sdb`
+`mkdir -p /disco2`
+`mount -t /dev/sdb /disco2`
+`vi /etc/fstab`
+
 # 4. Gestión avanzada de discos
+
+---
+
+## Particiones y tablas de particiones
+
+Una **partición** es un agrupamiento de sectores contiguos en un disco duro. Sobre cada partición se genera un sistema de ficheros independiente, de forma que el sistema las ve como dispositivos distintos en `/dev`, aunque correspondan al mismo dispositivo físico. Al estar formadas por sectores contiguos, es importante planificar con antelación el espacio asignado a cada una.
+
+Las particiones se describen en una estructura de datos llamada **tabla de particiones**. Existen tres tipos:
+
+| Tipo | Descripción |
+|---|---|
+| **MBR** (*Master Boot Record*) | El más antiguo (desde 1983). Soporta discos de hasta 2 TiB y un máximo de 4 particiones primarias. Para tener más, una de ellas debe ser una *partición extendida* que contenga particiones lógicas. Se usa con firmware BIOS |
+| **APM** (*Apple Partition Map*) | Propio de los Macintosh anteriores a la transición a Intel (2006). Prácticamente obsoleto |
+| **GPT** (*GUID Partition Table*) | El estándar moderno, parte de la especificación UEFI. Soporta discos de hasta 2,2 ZiB, hasta 128 particiones primarias por defecto y almacena una cabecera de respaldo al final del disco para recuperarse ante corrupción. Se usa con firmware UEFI. Referencia: [Red Hat — Disk Partitions Overview](https://docs.redhat.com/en/documentation/red_hat_enterprise_linux/7/html/installation_guide/appe-disk-partitions-overview) |
+
+> **Recomendación:** Para sistemas nuevos con UEFI se debe usar GPT. MBR solo es necesario en hardware antiguo con BIOS.
+
+---
+
+## Herramientas para gestionar particiones
+
+### `parted` / libparted
+
+[libparted](https://www.gnu.org/software/parted/) es el proyecto de software libre que desarrolla herramientas para manipular particiones y crear sistemas de ficheros sobre ellas. La herramienta de línea de comandos incluida es `parted`, que soporta tanto MBR como GPT y permite crear, eliminar y redimensionar particiones.
+
+```bash
+parted /dev/sdb print          # Muestra la tabla de particiones
+parted /dev/sdb mklabel gpt    # Crea una tabla de particiones GPT
+parted /dev/sdb mkpart primary ext4 1MiB 50GiB   # Crea una partición
+```
+
+### `fdisk` y familia
+
+`fdisk` es la herramienta clásica para particionado en modo texto. Forma parte del paquete `util-linux`. Tiene variantes:
+
+| Herramienta | Descripción |
+|---|---|
+| `fdisk` | Interfaz interactiva en modo texto. Soporta MBR y GPT (desde versiones recientes) |
+| `cfdisk` | Interfaz de menú mejorada basada en ncurses |
+| `sfdisk` | Versión orientada a scripting: lee y escribe tablas de particiones en formato de texto |
+
+```bash
+fdisk -lu /dev/sda             # Lista la tabla de particiones con tamaños en sectores
+lsblk                          # Vista en árbol de todos los dispositivos de bloque y sus particiones
+```
+
+### GPT fdisk
+
+[GPT fdisk](https://www.rodsbooks.com/gdisk/) es una suite específica para tablas GPT. Incluye:
+
+| Herramienta | Descripción |
+|---|---|
+| `gdisk` | Equivalente a `fdisk` para GPT |
+| `cgdisk` | Equivalente a `cfdisk`, con interfaz ncurses |
+| `sgdisk` | Equivalente a `sfdisk`, orientado a scripting |
+
+---
+
+## Configuración de RAID
+
+En una configuración RAID (*Redundant Array of Independent Disks*), varios discos se combinan para mejorar el rendimiento, la fiabilidad o ambas. El principio consiste en usar parte del espacio en disco para almacenar información de control o copias de los datos que permitan recuperarlos ante un fallo hardware.
+
+### Niveles de RAID
+
+Los niveles más habituales son:
+
+| Nivel | Funcionamiento | Redundancia | Discos mínimos |
+|---|---|---|---|
+| **RAID 0** | *Striping*: los datos se distribuyen en franjas entre todos los discos. Mejora el rendimiento, pero sin redundancia. Si falla un disco, se pierden todos los datos | No | 2 |
+| **RAID 1** | *Mirroring*: los datos se replican íntegramente en cada disco. Si falla uno, el sistema sigue funcionando con el resto | Sí | 2 |
+| **RAID 5** | *Striping* con paridad distribuida entre los discos. Tolera el fallo de un disco. Requiere al menos 3 discos | Sí (1 disco) | 3 |
+| **RAID 6** | Como RAID 5 pero con doble paridad. Tolera el fallo simultáneo de dos discos | Sí (2 discos) | 4 |
+| **RAID 10** | Combinación de RAID 1 y RAID 0: espejo de conjuntos en *stripe*. Alto rendimiento y redundancia | Sí | 4 |
+
+> **Nota importante: RAID no es una copia de seguridad.** Protege frente a fallos de hardware, pero no frente a borrados accidentales, corrupción de datos o desastres. Siempre deben mantenerse backups independientes.
+
+### RAID por software vs. hardware
+
+RAID puede implementarse por **hardware** (en la controladora de discos) o por **software** (en el kernel del sistema operativo). La implementación hardware es más eficiente en general, aunque suele imponer restricciones sobre el tipo de discos a usar.
+
+En Linux, la implementación software de RAID se realiza a nivel de kernel mediante el subsistema **mdraid**. Las particiones destinadas a un array se marcan con un código especial (`0xFD` en MBR, `Linux RAID` en GPT) y el kernel las combina para crear nuevos dispositivos de bloque con nombres de la forma `/dev/md0`, `/dev/md1`, etc.
+
+Consideraciones importantes:
+
+- Todas las particiones de un mismo array deben tener el **mismo tamaño**.
+- Es más seguro construir el array con **discos completos** que con particiones: si un disco con múltiples particiones RAID falla, se pierden todos los arrays en los que participa a la vez.
+- Si se usan particiones de un mismo disco en distintos arrays, en la práctica se obtiene poca redundancia real ante fallos del disco completo.
+- Los gestores de arranque no siempre pueden leer desde arrays RAID, por lo que se recomienda crear una **partición `/boot` fuera del array**.
+- Si el kernel es personalizado, hay que asegurarse de incluir el soporte RAID necesario.
+
+### `mdadm`: gestión de arrays RAID por software
+
+La herramienta principal para gestionar arrays RAID por software en Linux es `mdadm` (*Multiple Device ADMinistration*). Referencia: [`man 8 mdadm`](https://linux.die.net/man/8/mdadm)
+
+```bash
+# Crear un array RAID 5 con tres dispositivos
+mdadm --create /dev/md0 --level=5 --raid-devices=3 /dev/sdb1 /dev/sdc1 /dev/sdd1
+
+# Añadir un disco de repuesto (hot spare)
+mdadm --create /dev/md1 --level=5 --raid-devices=3 --spare-devices=1 /dev/sd[bcde]1
+
+# Consultar el estado del array
+cat /proc/mdstat
+mdadm --detail /dev/md0
+
+# Guardar la configuración para que el array se ensamble automáticamente en el arranque
+mdadm --examine --scan | tee -a /etc/mdadm/mdadm.conf
+```
+
+Una vez creado, un array RAID se trata como cualquier otro dispositivo de bloque: se puede formatear con `mkfs`, particionarlo con `fdisk` o añadirlo a `/etc/fstab`.
+
+---
+
+## Trabajo con volúmenes lógicos (LVM)
+
+Las particiones son estructuras inflexibles: al estar formadas por sectores contiguos del disco, resulta complejo reorganizar el almacenamiento cuando cambian las necesidades. **LVM** (*Logical Volume Manager*) es la solución estándar en Linux para gestionar el almacenamiento de forma flexible y dinámica.
+
+### Conceptos fundamentales
+
+LVM se organiza en tres capas de abstracción:
+
+```
+Discos físicos / Particiones
+        ↓
+  Volúmenes Físicos (PV)
+        ↓
+  Grupos de Volúmenes (VG)
+        ↓
+  Volúmenes Lógicos (LV)
+        ↓
+  Sistema de ficheros (mkfs)
+```
+
+| Capa | Descripción |
+|---|---|
+| **Volumen Físico (PV)** | Disco completo o partición preparada para su uso por LVM. Se inicializa con `pvcreate` |
+| **Grupo de Volúmenes (VG)** | Conjunto de uno o más PVs tratados como un único espacio de almacenamiento. Es el "pool" del que se extraen los volúmenes lógicos |
+| **Volumen Lógico (LV)** | Partición abstracta creada sobre un VG. No referencia sectores físicos concretos, sino que el VG los asigna dinámicamente. Se comporta como un dispositivo de bloque estándar en `/dev/<vg>/<lv>` |
+
+### Flujo de trabajo básico
+
+```bash
+# 1. Crear volúmenes físicos
+pvcreate /dev/sdb /dev/sdc
+
+# 2. Crear un grupo de volúmenes uniendo los PVs
+vgcreate datos_vg /dev/sdb /dev/sdc
+
+# 3. Crear volúmenes lógicos sobre el VG
+lvcreate -L 50G -n apps_lv datos_vg          # LV de tamaño fijo
+lvcreate -l 50%FREE -n logs_lv datos_vg       # LV usando un % del espacio libre
+
+# 4. Formatear y montar el LV como cualquier otro dispositivo
+mkfs.ext4 /dev/datos_vg/apps_lv
+mount /dev/datos_vg/apps_lv /mnt/apps
+```
+
+### Ampliación de almacenamiento en caliente
+
+Una de las principales ventajas de LVM es poder redimensionar volúmenes sin reiniciar el sistema:
+
+```bash
+# Añadir un disco nuevo al grupo de volúmenes existente
+pvcreate /dev/sdd
+vgextend datos_vg /dev/sdd
+
+# Ampliar el volumen lógico y el sistema de ficheros
+lvextend -L +20G /dev/datos_vg/apps_lv
+resize2fs /dev/datos_vg/apps_lv            # Para Ext4
+xfs_growfs /mnt/apps                       # Para XFS (se opera sobre el punto de montaje)
+```
+
+### Comandos de administración LVM
+
+Las herramientas siguen una nomenclatura consistente: prefijo `pv` para volúmenes físicos, `vg` para grupos de volúmenes y `lv` para volúmenes lógicos.
+
+**Volúmenes físicos:**
+
+| Comando | Función |
+|---|---|
+| `pvcreate` | Inicializa un disco o partición como volumen físico |
+| `pvdisplay` / `pvs` | Muestra información detallada / resumida de los PVs |
+| `pvmove` | Mueve los extents de datos de un PV a otro |
+| `pvremove` | Elimina la etiqueta LVM de un volumen físico |
+| `pvresize` | Ajusta el tamaño de un PV (tras redimensionar el disco subyacente) |
+| `pvscan` | Escanea todos los discos en busca de volúmenes físicos |
+| `pvchange` / `pvck` | Cambia atributos / verifica la integridad de un PV |
+
+**Grupos de volúmenes:**
+
+| Comando | Función |
+|---|---|
+| `vgcreate` | Crea un nuevo grupo de volúmenes |
+| `vgdisplay` / `vgs` | Muestra información detallada / resumida de los VGs |
+| `vgextend` | Añade un PV a un VG existente |
+| `vgreduce` | Elimina un PV de un VG |
+| `vgmerge` / `vgsplit` | Fusiona o divide grupos de volúmenes |
+| `vgremove` | Elimina un grupo de volúmenes |
+| `vgscan` / `vgck` | Escanea / verifica la integridad de los VGs |
+| `vgchange` | Activa o desactiva un VG y modifica sus atributos |
+
+**Volúmenes lógicos:**
+
+| Comando | Función |
+|---|---|
+| `lvcreate` | Crea un nuevo volumen lógico |
+| `lvdisplay` / `lvs` | Muestra información detallada / resumida de los LVs |
+| `lvextend` | Aumenta el tamaño de un LV |
+| `lvreduce` | Reduce el tamaño de un LV (requiere desmontar el FS primero en la mayoría de casos) |
+| `lvresize` | Cambia el tamaño de un LV (puede ampliar o reducir) |
+| `lvremove` | Elimina un volumen lógico |
+| `lvscan` | Escanea todos los VGs en busca de volúmenes lógicos |
+| `lvchange` | Activa / desactiva un LV o modifica sus atributos |
+
+### Herramientas gráficas y complementos
+
+- [system-config-lvm](https://access.redhat.com/documentation/en-us/red_hat_enterprise_linux/6/html/storage_administration_guide/s1-system-config-lvm): herramienta gráfica para gestionar LVM en Red Hat/Fedora (en desuso en versiones modernas).
+- [KDE Volume and Partition Manager (kvpm)](https://sourceforge.net/projects/kvpm/): interfaz gráfica para LVM y GNU parted.
+- [Enterprise Volume Management System (EVMS)](https://evms.sourceforge.net/): sistema unificado para gestionar RAID, LVM y múltiples sistemas de ficheros (proyecto discontinuado).
+
+> **LVM sobre RAID:** Es habitual combinar ambas tecnologías, creando primero el array RAID (para obtener redundancia) y después configurando LVM sobre él (para obtener flexibilidad). En este esquema, el array `/dev/md0` se convierte en el volumen físico de LVM.
+
+---
+
+## Puesta a punto del acceso a discos
+
+### Tecnologías de interfaz y drivers
+
+Desde el punto de vista de la administración, todos los discos utilizan el mismo tipo de interfaz con Linux a través de sus drivers. Los drivers están escritos para la **controladora de discos** de la placa base o para la tarjeta controladora, no para el disco en sí.
+
+| Driver | Uso | Nomenclatura en `/dev` |
+|---|---|---|
+| **PATA** (IDE) | Discos IDE/PATA, prácticamente obsoletos. Se mantienen en el kernel por compatibilidad | `/dev/hda`, `/dev/hdb`… |
+| **SCSI/SATA/SAS/USB** | Subsistema unificado usado por discos SATA, SAS, USB y también discos virtuales en máquinas virtuales | `/dev/sda`, `/dev/sdb`… |
+| **NVMe** | Discos NVMe conectados directamente al bus PCIe. Alto rendimiento | `/dev/nvme0n1`, `/dev/nvme1n1`… |
+
+### Interrupciones y DMA
+
+Como cualquier dispositivo hardware, los discos tienen asociada una [interrupción (IRQ)](https://es.wikipedia.org/wiki/Interrupci%C3%B3n) y, en los casos que aplica, un canal de [acceso directo a memoria (DMA)](https://es.wikipedia.org/wiki/Acceso_directo_a_memoria):
+
+```bash
+cat /proc/interrupts    # Muestra la asignación actual de IRQs por dispositivo
+cat /proc/dma           # Muestra la asignación de canales DMA (relevante en hardware antiguo ISA/PATA)
+sysctl -a               # Lista todos los parámetros del kernel ajustables en tiempo de ejecución
+```
+
+La configuración de parámetros del kernel se puede ajustar permanentemente en `/etc/sysctl.conf` o en ficheros bajo `/etc/sysctl.d/`.
+
+---
+
+### Prueba de rendimiento del disco
+
+#### `hdparm`
+
+`hdparm` es la herramienta clásica para obtener parámetros de rendimiento de discos IDE/SATA y compararlos con las especificaciones del fabricante. Referencia: [`man 8 hdparm`](https://man7.org/linux/man-pages/man8/hdparm.8.html)
+
+```bash
+hdparm -tT /dev/sda          # Test de velocidad de lectura (caché y disco)
+hdparm -tT --direct /dev/sda # Test evitando la caché del sistema operativo (más realista)
+hdparm -I /dev/sda           # Muestra información detallada del disco (modelo, funcionalidades)
+```
+
+Para discos con driver PATA, `hdparm` también permite ajustar parámetros de acceso como el modo de transferencia DMA.
+
+> **Nota:** Para discos NVMe existe la herramienta equivalente `nvme-cli` con el comando `nvme` (`nvme smart-log /dev/nvme0`).
+
+---
+
+### Monitorización del disco con SMART
+
+[S.M.A.R.T.](https://es.wikipedia.org/wiki/S.M.A.R.T.) (*Self-Monitoring, Analysis and Reporting Technology*) es una tecnología integrada en la mayoría de discos duros y SSD que permite monitorizar su estado interno y anticipar fallos hardware antes de que se produzcan.
+
+La herramienta estándar en Linux es el paquete **`smartmontools`**, que incluye dos componentes:
+
+| Componente | Función |
+|---|---|
+| `smartctl` | Utilidad de línea de comandos para consultar atributos SMART, ejecutar autodiagnósticos y ver los registros del disco |
+| `smartd` | Demonio de monitorización continua en segundo plano. Puede enviar alertas por correo cuando detecta problemas |
+
+Comandos habituales de `smartctl`:
+
+```bash
+smartctl -i /dev/sda             # Información básica del disco (modelo, serie, soporte SMART)
+smartctl -H /dev/sda             # Comprobación rápida de salud: PASSED / FAILED
+smartctl -a /dev/sda             # Muestra todos los atributos SMART y el historial de errores
+smartctl -t short /dev/sda       # Inicia un autodiagnóstico corto (1-2 minutos)
+smartctl -t long /dev/sda        # Inicia un autodiagnóstico completo (puede durar horas)
+smartctl -l selftest /dev/sda    # Muestra el historial de autodiagnósticos anteriores
+```
+
+Atributos SMART críticos a vigilar (valores distintos de 0 son señal de alerta):
+
+| ID | Nombre | Significado |
+|---|---|---|
+| 5 | `Reallocated_Sector_Ct` | Sectores reasignados por errores de lectura/escritura |
+| 187 | `Reported_Uncorrect` | Errores no corregibles |
+| 197 | `Current_Pending_Sector` | Sectores pendientes de reasignación |
+| 198 | `Offline_Uncorrectable` | Sectores inaccesibles en tests offline |
+
+> **SmartMonTools** tiene una versión con interfaz gráfica llamada **GSmartControl**, disponible en los repositorios de la mayoría de distribuciones.
+
+---
+
+## Backup y restauración del disco
+
+### Estrategia de almacenamiento
+
+Antes de elegir una herramienta, debe definirse el medio donde se almacenarán los backups:
+
+| Medio | Descripción |
+|---|---|
+| **Cinta magnética** | El estándar tradicional en entornos empresariales. Alta capacidad y durabilidad, pero acceso secuencial |
+| **Disco (interno/externo)** | El medio más habitual hoy en día. Permite acceso aleatorio y backups más rápidos |
+| **Almacenamiento en red / nube** | Los datos se envían a través de la red a ubicaciones externas. Protege ante desastres físicos locales |
+
+### Dispositivos de cinta en Linux
+
+<cite index="85-1">El dispositivo de cinta con rebobinado automático (*rewind*) en Linux es `/dev/st0`, y la variante sin rebobinado es `/dev/nst0`. La variante sin rebobinado es útil en scripts para evitar rebobinados inesperados o para anexar datos a continuación de un backup anterior.</cite> Los discos IDE de cinta se asignan a `/dev/ht0`.
+
+Opciones adicionales de denominación:
+
+| Dispositivo | Comportamiento |
+|---|---|
+| `/dev/st0` | SCSI/SATA, rebobina al cerrar |
+| `/dev/nst0` | SCSI/SATA, **sin** rebobinado al cerrar |
+| `/dev/st0l` / `/dev/st0m` | Baja / media compresión hardware |
+| `/dev/ht0` | IDE/PATA, rebobina al cerrar |
+
+### Herramientas de backup
+
+#### `tar` — Archivado y compresión
+
+La herramienta más universal para crear archivos comprimidos de directorios y ficheros.
+
+```bash
+tar -czf backup.tar.gz /home/usuario        # Crea un archivo comprimido con gzip
+tar -cjf backup.tar.bz2 /home/usuario       # Compresión con bzip2 (mayor ratio)
+tar -cJf backup.tar.xz /home/usuario        # Compresión con xz (mayor ratio aún)
+tar -xzf backup.tar.gz -C /destino          # Extrae en un directorio específico
+tar -tzf backup.tar.gz                      # Lista el contenido sin extraer
+```
+
+Backup directo a cinta con `tar`:
+
+```bash
+tar -czf /dev/st0 /directorio_origen        # Backup a cinta con compresión
+tar -tzf /dev/st0                           # Lista el contenido de la cinta
+tar -xzf /dev/st0                           # Restaura desde cinta
+```
+
+#### `rsync` — Backups incrementales en red
+
+Herramienta eficiente para backups incrementales: solo transfiere los ficheros que hayan cambiado desde el último backup.
+
+```bash
+rsync -avz /origen/ usuario@servidor:/destino/     # Backup remoto por SSH
+rsync -avz --delete /origen/ /destino/             # Sincronización (borra lo que no existe en origen)
+rsync -avz --link-dest=/backup/anterior /origen/ /backup/nuevo/   # Backup incremental con hardlinks
+```
+
+#### `dd` — Copia a nivel de bloque
+
+Copia datos byte a byte, incluyendo el espacio vacío. Útil para clonar discos o particiones completas o crear imágenes de dispositivos.
+
+```bash
+dd if=/dev/sda of=/dev/sdb bs=4M status=progress   # Clona disco completo
+dd if=/dev/sda1 of=/ruta/imagen.img bs=4M           # Crea imagen de una partición
+dd if=/dev/zero of=/dev/sdb bs=4M                   # Borra un disco completamente
+```
+
+> **Advertencia:** `dd` opera directamente sobre los bloques del dispositivo sin entender el sistema de ficheros. Las imágenes creadas con `dd` solo pueden restaurarse en un destino de igual o mayor tamaño que el original.
+
+#### `cpio` — Archivado con `find`
+
+Herramienta de archivado que trabaja bien en combinación con `find` para seleccionar exactamente qué ficheros incluir:
+
+```bash
+find /etc -depth -print | cpio -ovH crc -O /dev/st0    # Backup de /etc a cinta
+find /home -depth -print | cpio -ovH crc | gzip > backup.cpio.gz  # Backup comprimido
+```
+
+#### `mt` — Control de cintas magnéticas
+
+`mt` (*Magnetic Tape*) es la herramienta para controlar la unidad de cinta: rebobinar, posicionarse en una marca, verificar el estado, etc. Referencia: [`man 1 mt`](https://man7.org/linux/man-pages/man1/mt.1.html)
+
+```bash
+mt -f /dev/st0 status      # Estado de la unidad de cinta
+mt -f /dev/st0 rewind      # Rebobina la cinta al principio
+mt -f /dev/st0 erase       # Borra la cinta
+mt -f /dev/nst0 eod        # Avanza hasta el final de los datos (para anexar)
+mt -f /dev/nst0 fsf 1      # Avanza una marca de fichero (para leer el siguiente backup en cinta)
+```
+
+### Resumen de herramientas de backup
+
+| Herramienta | Uso principal |
+|---|---|
+| `tar` | Archivado y compresión de directorios. La opción más habitual en la práctica |
+| `rsync` | Backups incrementales y sincronización, especialmente en red |
+| `dd` | Clonado de discos/particiones a nivel de bloque |
+| `cpio` | Archivado selectivo de ficheros, combinado con `find` |
+| `mt` | Control de unidades de cinta magnética |
