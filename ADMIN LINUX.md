@@ -1304,3 +1304,442 @@ mt -f /dev/nst0 fsf 1      # Avanza una marca de fichero (para leer el siguiente
 | `dd` | Clonado de discos/particiones a nivel de bloque |
 | `cpio` | Archivado selectivo de ficheros, combinado con `find` |
 | `mt` | Control de unidades de cinta magnética |
+
+# 5. Configuración de red
+
+---
+
+## Conceptos previos: nomenclatura de interfaces
+
+Las versiones modernas del kernel de Linux usan **nombres predecibles de interfaz** en lugar de los clásicos `eth0`, `wlan0`, etc. Estos nombres están basados en la topología física del hardware (p. ej. `enp3s0` para una tarjeta Ethernet en el bus PCI 3, slot 0; `wlp2s0` para WiFi). El objetivo es que el nombre no cambie entre reinicios aunque se añada o elimine hardware.
+
+|Prefijo|Tipo de interfaz|
+|---|---|
+|`en`|Ethernet (cableada)|
+|`wl`|Wireless LAN (WiFi)|
+|`ww`|Wireless WAN (móvil)|
+|`lo`|Loopback|
+
+Para listar todas las interfaces disponibles:
+
+bash
+
+```bash
+ip link show          # Muestra todas las interfaces y su estado
+ip -br link show      # Vista compacta con colores
+```
+
+---
+
+## Gestores de red modernos
+
+En las distribuciones actuales la configuración de red no se gestiona directamente con `ifconfig` sino mediante uno de estos sistemas:
+
+|Herramienta|Uso típico|Distros|
+|---|---|---|
+|**NetworkManager**|Entornos de escritorio y portátiles. Gestiona conexiones WiFi, VPN y perfiles de forma dinámica|Fedora, RHEL, Ubuntu Desktop, Debian Desktop|
+|**systemd-networkd**|Servidores y entornos con configuración estática. Ligero y sin dependencias extra|Ubuntu Server, Arch, sistemas embebidos|
+|**Netplan**|Capa de abstracción YAML por encima de NetworkManager o systemd-networkd|Ubuntu 17.10+|
+
+> **Importante:** Los cambios realizados con `ip` o `ifconfig` directamente sobre las interfaces son **temporales** y se pierden al reiniciar. Para hacerlos permanentes hay que configurarlos a través del gestor de red de la distribución.
+
+### NetworkManager desde la línea de comandos: `nmcli`
+
+bash
+
+```bash
+nmcli device status                          # Estado de todas las interfaces
+nmcli connection show                        # Lista las conexiones configuradas
+nmcli connection up <nombre>                 # Activa una conexión
+nmcli connection down <nombre>               # Desactiva una conexión
+```
+
+### Ficheros de configuración por distribución
+
+|Distro|Fichero / ruta de configuración|
+|---|---|
+|RHEL / CentOS / Fedora|`/etc/NetworkManager/system-connections/` (formato keyfile)|
+|Ubuntu / Debian moderno|`/etc/netplan/*.yaml`|
+|Debian clásico|`/etc/network/interfaces`|
+
+---
+
+## DHCP y configuración de dirección IP
+
+Linux puede actuar como **cliente** o **servidor** DHCP. Los clientes DHCP más comunes son:
+
+|Cliente|Descripción|
+|---|---|
+|`dhclient`|El más extendido, parte del paquete `isc-dhcp-client`. Incluido por defecto en Debian/Ubuntu|
+|`dhcpcd`|Ligero y rápido, habitual en Arch, Alpine y sistemas embebidos|
+|`pump`|Antiguo cliente DHCP, prácticamente en desuso en distribuciones modernas|
+
+Para solicitar una configuración IP desde el servidor DHCP de forma manual:
+
+bash
+
+```bash
+dhclient enp3s0              # Solicita dirección IP para la interfaz indicada
+dhclient -r enp3s0           # Libera la concesión DHCP actual
+```
+
+### Herramientas modernas: suite `iproute2`
+
+`ifconfig` y las herramientas del paquete `net-tools` (`route`, `arp`, `netstat`) están **obsoletas y sin mantenimiento activo** en las distribuciones modernas. Su sustituta es la suite **`iproute2`**, cuya herramienta principal es el comando `ip`.
+
+Equivalencias entre herramientas antiguas y modernas:
+
+|Herramienta antigua (net-tools)|Equivalente moderno (iproute2)|
+|---|---|
+|`ifconfig`|`ip addr`, `ip link`|
+|`route`|`ip route`|
+|`arp`|`ip neigh`|
+|`netstat`|`ss`|
+|`iwconfig`|`iw`|
+
+---
+
+## Comando `ip` (iproute2)
+
+El comando `ip` unifica la gestión de interfaces, direcciones, rutas, vecinos ARP y más. Referencia: [`man 8 ip`](https://man7.org/linux/man-pages/man8/ip.8.html)
+
+Sintaxis general:
+
+```
+ip [OPCIONES] OBJETO {COMANDO [ARGUMENTOS] | help}
+```
+
+Los objetos principales son:
+
+|Objeto|Descripción|
+|---|---|
+|`link`|Interfaces de red (capa de enlace)|
+|`addr`|Direcciones IP asignadas a interfaces|
+|`route`|Tabla de enrutamiento|
+|`neigh`|Tabla ARP / caché de vecinos|
+|`netns`|Espacios de nombres de red|
+
+Cada objeto puede escribirse abreviado (`ip a` en lugar de `ip addr show`).
+
+### Gestión de interfaces (`ip link`)
+
+bash
+
+```bash
+ip link show                             # Lista todas las interfaces
+ip link set enp3s0 up                    # Activa una interfaz
+ip link set enp3s0 down                  # Desactiva una interfaz
+ip link set enp3s0 mtu 9000              # Cambia el MTU (jumbo frames)
+```
+
+### Gestión de direcciones IP (`ip addr`)
+
+bash
+
+```bash
+ip addr show                             # Muestra todas las IPs asignadas
+ip addr show enp3s0                      # Solo para una interfaz concreta
+ip addr add 192.168.1.100/24 dev enp3s0  # Asigna una IP (temporal)
+ip addr del 192.168.1.100/24 dev enp3s0  # Elimina una IP
+```
+
+### Gestión de rutas (`ip route`)
+
+bash
+
+```bash
+ip route show                            # Muestra la tabla de rutas
+ip route add default via 192.168.1.1     # Añade la puerta de enlace predeterminada
+ip route add 10.0.0.0/8 via 192.168.1.254 dev enp3s0  # Ruta estática
+ip route del default                     # Elimina la ruta por defecto
+ip route get 8.8.8.8                     # Muestra qué ruta usaría el kernel para una IP
+```
+
+### Tabla ARP (`ip neigh`)
+
+bash
+
+```bash
+ip neigh show                            # Muestra la caché ARP
+ip neigh flush all                       # Vacía la caché ARP
+```
+
+---
+
+## El fichero `/etc/hosts`
+
+En redes pequeñas o para resolución local, el fichero `/etc/hosts` permite asociar nombres de host a direcciones IP sin necesidad de DNS. Las aplicaciones consultan este fichero antes de realizar una consulta DNS (según la configuración de `/etc/nsswitch.conf`).
+
+Formato:
+
+```
+<dirección_IP>   <nombre_host>   [alias...]
+127.0.0.1        localhost
+192.168.1.10     servidor01   servidor01.local
+```
+
+Para consultar o establecer el nombre del propio equipo:
+
+bash
+
+```bash
+hostname                   # Muestra el nombre actual
+hostname nuevo_nombre      # Lo cambia temporalmente
+hostnamectl set-hostname nuevo_nombre   # Cambio permanente (systemd)
+```
+
+El nombre de host permanente se almacena en `/etc/hostname`.
+
+---
+
+## Configuración de WiFi
+
+### Herramientas de bajo nivel
+
+|Herramienta|Estado|Descripción|
+|---|---|---|
+|`iwconfig` / `iwlist`|**Obsoleta** (paquete `wireless-tools`)|Solo soporta WEP. No puede gestionar WPA/WPA2/WPA3 ni redes 5 GHz de forma fiable|
+|`iw`|**Actual**|Herramienta moderna basada en el protocolo `nl80211`. Reemplaza a `iwconfig` y soporta todos los estándares 802.11 actuales|
+
+Comandos habituales con `iw`:
+
+bash
+
+```bash
+iw dev                              # Lista las interfaces WiFi disponibles
+iw dev wlan0 scan                   # Escanea las redes disponibles
+iw dev wlan0 link                   # Muestra el estado de la conexión actual
+iw dev wlan0 connect "MiRedWiFi"    # Conecta a una red abierta (sin contraseña)
+```
+
+> **Nota:** El nombre correcto del comando de escaneo en tus apuntes originales era `iwlist wlan0 scan` (con `l`, no con `wilist`). En sistemas modernos el equivalente es `iw dev wlan0 scan`.
+
+### Para redes cifradas (WPA/WPA2/WPA3): `wpa_supplicant`
+
+`iw` no gestiona cifrado. Para redes protegidas se usa `wpa_supplicant` junto con `dhclient`:
+
+bash
+
+```bash
+# Generar el fichero de configuración con la contraseña cifrada
+wpa_passphrase "MiRedWiFi" "mi_contraseña" | sudo tee /etc/wpa_supplicant.conf
+
+# Lanzar wpa_supplicant en segundo plano
+sudo wpa_supplicant -B -i wlan0 -c /etc/wpa_supplicant.conf
+
+# Obtener IP por DHCP
+sudo dhclient wlan0
+```
+
+### Gestión de alto nivel: `nmcli`
+
+En la práctica, la forma más cómoda de gestionar WiFi desde línea de comandos es `nmcli` (NetworkManager):
+
+bash
+
+```bash
+nmcli dev wifi list                                      # Lista redes disponibles
+nmcli dev wifi connect "MiRedWiFi" password "mi_clave"   # Conecta a una red WPA2/WPA3
+nmcli dev wifi connect "MiRedWiFi" password "mi_clave" ifname wlan0  # Especificando interfaz
+```
+
+### Herramientas gráficas
+
+Para escritorio, los gestores de red con interfaz gráfica más comunes son **GNOME Network Manager** (integrado en el panel de GNOME), **nm-applet** (bandeja del sistema) y **plasma-nm** (KDE). La herramienta `wicd` mencionada en algunos materiales lleva años sin mantenimiento y se considera obsoleta.
+
+---
+
+## Configurar Linux como rúter
+
+Si el equipo tiene varias interfaces de red, puede actuar como rúter entre las redes a las que está conectado. Para ello hay que habilitar el **reenvío de paquetes IP** (_IP forwarding_):
+
+**Activación temporal (hasta el próximo reinicio):**
+
+bash
+
+```bash
+echo 1 > /proc/sys/net/ipv4/ip_forward
+# O equivalentemente:
+sysctl -w net.ipv4.ip_forward=1
+```
+
+**Activación permanente:**
+
+Editar (o crear) un fichero en `/etc/sysctl.d/` y añadir:
+
+```
+net.ipv4.ip_forward = 1
+```
+
+Aplicar sin reiniciar:
+
+bash
+
+```bash
+sysctl -p /etc/sysctl.d/99-ip_forward.conf
+```
+
+> **Nota:** En versiones modernas de las distribuciones se prefiere crear un fichero propio en `/etc/sysctl.d/` en lugar de editar directamente `/etc/sysctl.conf`, para no mezclar configuración del sistema con la del administrador.
+
+Después hay que añadir las rutas necesarias con `ip route` y, si se necesita NAT (enmascaramiento de la red interna), configurar `iptables` o `nftables`.
+
+---
+
+## Monitorización del tráfico de red
+
+### Comandos de diagnóstico rápido
+
+|Comando|Función|
+|---|---|
+|`ping <host>`|Comprueba conectividad básica enviando paquetes ICMP|
+|`traceroute <host>`|Muestra la ruta de saltos hasta un destino|
+|`mtr <host>`|Combina `ping` y `traceroute` en tiempo real: la herramienta más útil para diagnóstico de ruta|
+|`ip route get <IP>`|Muestra qué ruta usaría el kernel para alcanzar una IP|
+|`ip neigh`|Muestra la tabla ARP (equivalente a `arp -n`)|
+|`dig <dominio>`|Consulta DNS detallada (reemplaza a `nslookup`)|
+
+---
+
+### Comando `ss` (socket statistics)
+
+`ss` es el sustituto moderno y activamente mantenido de `netstat`. Pertenece a la suite `iproute2`, consulta directamente el kernel (más rápido y preciso que `netstat`) y ofrece soporte completo de IPv6. Referencia: [`man 8 ss`](https://man7.org/linux/man-pages/man8/ss.8.html)
+
+bash
+
+```bash
+ss -tuln                   # Puertos TCP y UDP en escucha (sin resolver nombres)
+ss -tulpn                  # Ídem, mostrando el proceso que los ocupa
+ss -s                      # Estadísticas resumidas de todos los sockets
+ss -tnp state established  # Conexiones TCP establecidas con el proceso
+ss -4 -tnp                 # Solo IPv4
+```
+
+> **Nota:** `netstat` pertenece al paquete `net-tools`, que lleva años sin mantenimiento activo. Se debe preferir `ss` para nuevos scripts y uso diario.
+
+---
+
+### Comando `netcat` (`nc`)
+
+[Netcat](https://netcat.sourceforge.net/) es una herramienta de propósito general para crear y depurar conexiones de red TCP/UDP. Se utiliza sobre todo en scripts que necesitan trabajar con sockets.
+
+bash
+
+```bash
+nc -zv 192.168.1.1 22          # Comprueba si el puerto 22 está accesible
+nc -l 8080                     # Escucha en el puerto 8080 (servidor simple)
+nc 192.168.1.1 8080            # Conecta al puerto 8080 de un host
+echo "hola" | nc 192.168.1.1 9999  # Envía texto a un socket remoto
+```
+
+---
+
+### Comando `tcpdump`
+
+Analizador de paquetes en línea de comandos. Para capturar tráfico, pone la tarjeta de red en **modo promiscuo**: en ese modo, la capa de enlace no descarta las tramas no dirigidas a la propia MAC y el sistema puede capturar todo el tráfico que circula por el segmento de red.
+
+bash
+
+```bash
+tcpdump -i enp3s0                         # Captura todo el tráfico de una interfaz
+tcpdump -i enp3s0 port 80                 # Filtra por puerto
+tcpdump -i enp3s0 host 192.168.1.10       # Filtra por host
+tcpdump -i enp3s0 -w captura.pcap         # Guarda la captura en un fichero (legible por Wireshark)
+tcpdump -i enp3s0 -n -v                   # Sin resolución de nombres, modo verbose
+```
+
+> **Nota:** Para capturar en modo promiscuo se requieren privilegios de root o la capability `CAP_NET_RAW`.
+
+---
+
+### Wireshark
+
+[Wireshark](https://www.wireshark.org/) es el analizador de paquetes gráfico de referencia: código abierto, multiplataforma y con soporte de cientos de protocolos. Puede leer capturas generadas por `tcpdump` (formato `.pcap`).
+
+Su versión en línea de comandos se llama **TShark** y es funcionalmente equivalente a `tcpdump` con el motor de disección de protocolos de Wireshark.
+
+bash
+
+```bash
+tshark -i enp3s0                    # Captura en tiempo real
+tshark -r captura.pcap              # Lee un fichero de captura
+tshark -r captura.pcap -Y "http"    # Filtra por protocolo
+```
+
+---
+
+### Comando `nmap`
+
+[nmap](https://nmap.org/) es la herramienta estándar de descubrimiento de red y auditoría de seguridad. Usa paquetes IP para determinar qué hosts están activos, qué servicios y versiones ofrecen, y qué sistema operativo tienen. Referencia: [`man 1 nmap`](https://man7.org/linux/man-pages/man1/nmap.1.html)
+
+bash
+
+```bash
+nmap 192.168.1.0/24                # Descubrimiento de hosts en una subred
+nmap -sV 192.168.1.10              # Detección de versiones de servicios
+nmap -O 192.168.1.10               # Detección del sistema operativo
+nmap -p 22,80,443 192.168.1.10     # Escanea solo los puertos indicados
+nmap -sT localhost                 # Escaneo TCP de puertos locales abiertos
+```
+
+> **Importante:** Escanear redes o equipos sin autorización es ilegal en muchas jurisdicciones. `nmap` debe usarse únicamente en redes propias o con permiso explícito.
+
+---
+
+## Ficheros de log de red
+
+Los registros del sistema se almacenan habitualmente en `/var/log/`. Los más relevantes para red son:
+
+|Fichero / ruta|Contenido|
+|---|---|
+|`/var/log/syslog` (Debian/Ubuntu)|Registro general del sistema, incluye eventos de red|
+|`/var/log/messages` (RHEL/CentOS)|Equivalente en distribuciones Red Hat|
+|`/var/log/NetworkManager`|Eventos específicos de NetworkManager|
+|`journalctl -u NetworkManager`|Logs de NetworkManager vía systemd journal|
+|`journalctl -u systemd-networkd`|Logs de systemd-networkd|
+
+En sistemas con **systemd**, `journalctl` es la herramienta principal para consultar logs:
+
+bash
+
+```bash
+journalctl -u NetworkManager -f          # Sigue los logs de NetworkManager en tiempo real
+journalctl -u NetworkManager --since "1 hour ago"   # Eventos de la última hora
+journalctl -k | grep -i "eth\|enp\|wlan"            # Mensajes del kernel sobre interfaces
+```
+
+Para más información sobre los ficheros de log del sistema: [The Geek Stuff — Linux /var/log files](https://www.thegeekstuff.com/2011/08/linux-var-log-files/).
+
+# 6. Configuración de servidores DNS
+Cada servidor DNS se configurará principalmente para al menos una de las siguientes tareas:
+- Resolver consultas DNS planteadas por los equipos o servidores de nuestra red, poniéndose en contacto con otros servidores DNS, en un proceso recursivo.
+- Resolver consultas autoritativas sobre aquellos servidores o equipos pertenecientes al dominio para el que él es autoritativo (estas respuestas son el punto y final a una consulta recursiva realizada desde otro servidor DNS, ya sea de dentro o fuera de nuestra red).
+Hay 4 tipos de servidores de nombres:
+- Maestro/Primario: Almacena los registros de zonas originales (primarias) y de autoridad para un espacio de nombre, y responde a preguntas acerca del espacio de nombres de otros servidores DNS
+- Esclavo/Secundario: Responde a peticiones de otros servidores de nombres relativos a los espacios de nombres para el que tiene autoridad. Sin embargo, éstos obtienen la información del espacio de nombres desde los servidores maestros.
+- Solo caché: Ofrece servicios de resolución de nombres a IP pero no tienen ninguna autoridad sobre ninguna zona. Las respuestas en general se introducen en una caché por un periodo fijo de tiempo.
+- Solo reenvío: Reenvía la petición a una lista específica de servidores DNS para su resolución.
+Un servidor de nombres puede implementar uno o varios de estos roles para según qué zonas.
+Una zona DNS es una parte de un espacio de nombres de dominio que utiliza el sistema de nombres de dominio para los que la responsabilidad administrativa ha sido delegada. Es conveniente almacenar varios servidores DNS en cada zona.
+- Zonas de búsqueda directa: Devuelven la IP.
+- Zonas de búsqueda inversa: Buscan un nombre en función de la IP.
+Un servidor DNS puede contar con información para el acceso directo a los servidores raíz del sistema DNS, aquellos de autoridad para los niveles superiores.
+## Implementación de DNS en Linux
+Hay varias implementaciones de Servidores DNS:
+- [BIND](https://www.isc.org/downloads/bind/): Es el software más usado de Internet que proporciona una plataforma sólida y estable sobre la que las organizaciones pueden construir sistemas de computación distribuida con garantía de compatibilidad con los estándares DNS publicados.
+- `dnsmasq`: Servidor ligero diseñado para proporcionar servicios DNS, DHCP y TFTP a una red a pequeña escala. 
+- `djbdns`: Alternativa a BIND enfocada en la seguridad, aunque [djbdns](https://cr.yp.to/djbdns.html) no es mantenido frecuentemente.
+Hablaremos concretamente de BIND. El fichero de configuración es `/etc/named.conf`. DOs de las funciones más importantes desde el punto de vista del funcionamiento del protocolo DNS es la definición de las opciones que indican en qué modo trabajará el servidor DNS y por otro lado la descripción de las zonas DNS almacenadas en ese servidor.
+- Forwarders: indica los servidores DNS a los que reenviar consultas DNS.
+- Listen-on: Sobre las redes sobre las cuales proporciona el servicio.
+- Forward-only: Indica que no se intenta una resolución recursiva de consultas, sino que se reenvían directamente.
+En el fichero de configuración definimos también las zonas como primarias o secundarias en función de si ese servidor actualiza registros en el fichero de la zona o los transfiere de un servidor autoritativo para esa zona. Además, pueden ser de búsqueda directa o de búsqueda inversa.
+En este fichero de configuración, también se identifican los ficheros en los que se almacenan las zonas que mantiene dicho servidor DNS , es decir, las asociaciones entre IPs y nombre, o entre IPs y servicios para el dominio correspondiente a dicha zona. 
+## Diagnóstico de DNS
+Podemos usar `name-checkzone`y `named-checkconf` para verificar la sintaxis de los ficheros de zonas y configuración BIND respectivamente. El servidor de BIND se denomina `named`.
+El comando `host` muestra los registros A, CNAME y PTR de un servidor.
+`nslookup` ha sido _deprecated_ pero se sigue usando bastante. El comando `dig`es similar a los anteriores pero la información aparece depurada.
+## Configuración de la transferencia de zona con DNSSEC
+La transferencia de zona es cuando un servidor esclavo en modo solo lectura deba sincronizarse con el maestro para recibir las actualizaciones que pueda sufrir.
+Se configura en `/etc/named.conf`, pero es vulnerable a ataques al no tener encriptación. Se puede configurar para que se use un modo seguro (DNSSEC).
+Generamos dos ficheros de claves pública y privada que se usarán para la encriptación. La clave pública se reparte entre los servidores que van a recibir la transferencia y la privada se usa para firmar usando el comando `dnssec-signzone`.
+El fichero encriptado que se genera será el que se use como fichero de zona, actualizándolo en `/etc/named.conf`.

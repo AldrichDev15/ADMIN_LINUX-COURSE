@@ -11,10 +11,14 @@
             "id": "4ccf38d8cf6b98f2",
             "type": "leaf",
             "state": {
-              "type": "empty",
-              "state": {},
+              "type": "markdown",
+              "state": {
+                "file": "ADMIN LINUX.md",
+                "mode": "source",
+                "source": false
+              },
               "icon": "lucide-file",
-              "title": "Nueva pestaña"
+              "title": "ADMIN LINUX"
             }
           }
         ]
@@ -92,11 +96,11 @@
               "state": {
                 "file": "ADMIN LINUX.md",
                 "collapseAll": false,
-                "extraContext": false,
+                "extraContext": true,
                 "sortOrder": "alphabetical",
                 "showSearch": false,
                 "searchQuery": "",
-                "backlinkCollapsed": false,
+                "backlinkCollapsed": true,
                 "unlinkedCollapsed": true
               },
               "icon": "links-coming-in",
@@ -153,7 +157,7 @@
               "type": "outline",
               "state": {
                 "file": "ADMIN LINUX.md",
-                "followCursor": false,
+                "followCursor": true,
                 "showSearch": false,
                 "searchQuery": ""
               },
@@ -161,7 +165,8 @@
               "title": "Esquema de ADMIN LINUX"
             }
           }
-        ]
+        ],
+        "currentTab": 4
       }
     ],
     "direction": "horizontal",
@@ -181,6 +186,7 @@
   },
   "active": "4ccf38d8cf6b98f2",
   "lastOpenFiles": [
+    "Ej1T4.rtf",
     "ADMIN LINUX.md",
     "Ej1T3.rtf",
     "Ej1T3.txt"
