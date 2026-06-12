@@ -1710,36 +1710,860 @@ journalctl -k | grep -i "eth\|enp\|wlan"            # Mensajes del kernel sobre 
 Para más información sobre los ficheros de log del sistema: [The Geek Stuff — Linux /var/log files](https://www.thegeekstuff.com/2011/08/linux-var-log-files/).
 
 # 6. Configuración de servidores DNS
-Cada servidor DNS se configurará principalmente para al menos una de las siguientes tareas:
-- Resolver consultas DNS planteadas por los equipos o servidores de nuestra red, poniéndose en contacto con otros servidores DNS, en un proceso recursivo.
-- Resolver consultas autoritativas sobre aquellos servidores o equipos pertenecientes al dominio para el que él es autoritativo (estas respuestas son el punto y final a una consulta recursiva realizada desde otro servidor DNS, ya sea de dentro o fuera de nuestra red).
-Hay 4 tipos de servidores de nombres:
-- Maestro/Primario: Almacena los registros de zonas originales (primarias) y de autoridad para un espacio de nombre, y responde a preguntas acerca del espacio de nombres de otros servidores DNS
-- Esclavo/Secundario: Responde a peticiones de otros servidores de nombres relativos a los espacios de nombres para el que tiene autoridad. Sin embargo, éstos obtienen la información del espacio de nombres desde los servidores maestros.
-- Solo caché: Ofrece servicios de resolución de nombres a IP pero no tienen ninguna autoridad sobre ninguna zona. Las respuestas en general se introducen en una caché por un periodo fijo de tiempo.
-- Solo reenvío: Reenvía la petición a una lista específica de servidores DNS para su resolución.
-Un servidor de nombres puede implementar uno o varios de estos roles para según qué zonas.
-Una zona DNS es una parte de un espacio de nombres de dominio que utiliza el sistema de nombres de dominio para los que la responsabilidad administrativa ha sido delegada. Es conveniente almacenar varios servidores DNS en cada zona.
-- Zonas de búsqueda directa: Devuelven la IP.
-- Zonas de búsqueda inversa: Buscan un nombre en función de la IP.
-Un servidor DNS puede contar con información para el acceso directo a los servidores raíz del sistema DNS, aquellos de autoridad para los niveles superiores.
-## Implementación de DNS en Linux
-Hay varias implementaciones de Servidores DNS:
-- [BIND](https://www.isc.org/downloads/bind/): Es el software más usado de Internet que proporciona una plataforma sólida y estable sobre la que las organizaciones pueden construir sistemas de computación distribuida con garantía de compatibilidad con los estándares DNS publicados.
-- `dnsmasq`: Servidor ligero diseñado para proporcionar servicios DNS, DHCP y TFTP a una red a pequeña escala. 
-- `djbdns`: Alternativa a BIND enfocada en la seguridad, aunque [djbdns](https://cr.yp.to/djbdns.html) no es mantenido frecuentemente.
-Hablaremos concretamente de BIND. El fichero de configuración es `/etc/named.conf`. DOs de las funciones más importantes desde el punto de vista del funcionamiento del protocolo DNS es la definición de las opciones que indican en qué modo trabajará el servidor DNS y por otro lado la descripción de las zonas DNS almacenadas en ese servidor.
-- Forwarders: indica los servidores DNS a los que reenviar consultas DNS.
-- Listen-on: Sobre las redes sobre las cuales proporciona el servicio.
-- Forward-only: Indica que no se intenta una resolución recursiva de consultas, sino que se reenvían directamente.
-En el fichero de configuración definimos también las zonas como primarias o secundarias en función de si ese servidor actualiza registros en el fichero de la zona o los transfiere de un servidor autoritativo para esa zona. Además, pueden ser de búsqueda directa o de búsqueda inversa.
-En este fichero de configuración, también se identifican los ficheros en los que se almacenan las zonas que mantiene dicho servidor DNS , es decir, las asociaciones entre IPs y nombre, o entre IPs y servicios para el dominio correspondiente a dicha zona. 
+
+---
+
+## El sistema DNS: conceptos fundamentales
+
+El **Sistema de Nombres de Dominio** (_Domain Name System_, DNS) es una base de datos distribuida y jerárquica que traduce nombres de dominio legibles por humanos (como `www.ejemplo.com`) en direcciones IP, y viceversa. El estándar está definido en el [RFC 1034](https://www.rfc-editor.org/rfc/rfc1034) y el [RFC 1035](https://www.rfc-editor.org/rfc/rfc1035).
+
+### Roles de un servidor DNS
+
+Cada servidor DNS puede desempeñar uno o varios de los siguientes roles:
+
+|Tipo|Descripción|
+|---|---|
+|**Maestro / Primario**|Almacena los registros originales (_zona primaria_) y tiene autoridad sobre ellos. Es la fuente de verdad para esa zona y responde consultas de otros servidores DNS|
+|**Esclavo / Secundario**|Tiene autoridad sobre una zona, pero obtiene sus datos del servidor maestro mediante **transferencias de zona**. Proporciona redundancia y reparte carga|
+|**Solo caché**|No tiene autoridad sobre ninguna zona. Realiza resolución recursiva en nombre de los clientes y almacena las respuestas en caché durante el tiempo indicado por el campo TTL (_Time To Live_) de cada registro|
+|**Solo reenvío** (_forwarder_)|No resuelve por sí mismo: reenvía todas las consultas a una lista de servidores DNS configurados. Útil en redes sin acceso directo a Internet o cuando se quiere centralizar el tráfico DNS|
+
+> Un mismo servidor puede combinar varios roles simultáneamente: por ejemplo, ser maestro para las zonas internas y solo reenvío para las externas.
+
+### Zonas DNS
+
+Una **zona DNS** es una porción del espacio de nombres de dominio sobre la que un servidor tiene autoridad administrativa delegada. Dentro de una zona puede haber múltiples servidores DNS para garantizar disponibilidad.
+
+|Tipo de zona|Descripción|
+|---|---|
+|**Búsqueda directa** (_forward lookup_)|Resuelve un nombre de dominio → dirección IP|
+|**Búsqueda inversa** (_reverse lookup_)|Resuelve una dirección IP → nombre de dominio. Usa el dominio especial `in-addr.arpa` para IPv4 e `ip6.arpa` para IPv6|
+|**Zona raíz** (_hint zone_)|Contiene las direcciones de los servidores raíz del DNS (los 13 grupos de servidores raíz), punto de partida de toda resolución recursiva|
+
+---
+
+## Registros de recursos DNS
+
+Los datos de una zona se almacenan como **registros de recursos** (_Resource Records_, RR). Los más importantes son:
+
+|Tipo|Nombre completo|Función|
+|---|---|---|
+|`A`|Address|Mapea un nombre de dominio a una dirección **IPv4**|
+|`AAAA`|IPv6 Address|Mapea un nombre de dominio a una dirección **IPv6**|
+|`CNAME`|Canonical Name|Crea un alias que apunta a otro nombre de dominio. No puede coexistir con otros registros del mismo nombre ni usarse en el vértice de zona (_apex_)|
+|`MX`|Mail Exchanger|Especifica el servidor de correo responsable de un dominio. Incluye un valor de prioridad|
+|`NS`|Name Server|Identifica los servidores DNS autoritativos de una zona. Siempre apunta a nombres, no a IPs|
+|`PTR`|Pointer|Resolución inversa: mapea una IP a un nombre. Reside en zonas `in-addr.arpa`|
+|`SOA`|Start of Authority|Registro obligatorio en toda zona. Contiene metadatos de administración: servidor primario, contacto, número de serie, TTLs de refresco y expiración|
+|`TXT`|Text|Almacena texto arbitrario. Se usa para verificación de dominio, SPF, DKIM y DMARC (correo)|
+|`SRV`|Service|Indica el host y puerto de un servicio específico (p. ej. SIP, XMPP)|
+
+### Estructura del registro SOA
+
+El registro SOA es el primero de toda zona y controla el comportamiento de las transferencias de zona:
+
+```
+ejemplo.com.  IN  SOA  ns1.ejemplo.com.  admin.ejemplo.com. (
+    2024010501   ; Serial: número de versión (se incrementa en cada cambio)
+    3600         ; Refresh: segundos que el esclavo espera antes de consultar al maestro
+    900          ; Retry: segundos que espera el esclavo si falla el refresco
+    604800       ; Expire: segundos tras los que el esclavo descarta su copia si no contacta al maestro
+    300          ; Negative TTL: tiempo de caché para respuestas NXDOMAIN
+)
+```
+
+> **Convención recomendada para el campo Serial:** usar el formato `YYYYMMDDNN` (año, mes, día, número de cambio del día). Por ejemplo, el tercer cambio del 5 de enero de 2024 sería `2024010503`. El esclavo solo descargará la zona si el serial del maestro es mayor que el suyo.
+
+---
+
+## Implementaciones de DNS en Linux
+
+|Software|Descripción|
+|---|---|
+|[**BIND**](https://www.isc.org/bind/) (Berkeley Internet Name Domain)|La implementación más utilizada en Internet. Mantenida por el ISC (_Internet Systems Consortium_). Soporta todos los roles DNS, DNSSEC y es el estándar de facto en entornos empresariales|
+|[**Unbound**](https://nlnetlabs.nl/projects/unbound/)|Resolvedor y caché moderno, orientado a la seguridad. Ligero y con soporte completo de DNSSEC. Muy usado como resolvedor local o en sistemas embebidos|
+|[**dnsmasq**](https://thekelleys.org.uk/dnsmasq/doc.html)|Servidor ligero para redes pequeñas. Combina DNS, DHCP y TFTP en un solo proceso. Habitual en routers domésticos y entornos de laboratorio|
+|[**djbdns**](https://cr.yp.to/djbdns.html)|Alternativa histórica a BIND enfocada en la seguridad. Prácticamente sin mantenimiento activo desde 2001 y en desuso en distribuciones modernas|
+
+---
+
+## Configuración de BIND
+
+El paquete se llama `bind9` (Debian/Ubuntu) o `bind` (RHEL/Fedora). El proceso servidor es **`named`**. Documentación oficial: [bind9.readthedocs.io](https://bind9.readthedocs.io/)
+
+```bash
+sudo apt install bind9 bind9-utils    # Debian / Ubuntu
+sudo dnf install bind bind-utils      # RHEL / Fedora / CentOS
+```
+
+### Estructura de ficheros de configuración
+
+|Fichero / ruta|Descripción|
+|---|---|
+|`/etc/named.conf`|Fichero principal (RHEL/Fedora)|
+|`/etc/bind/named.conf`|Fichero principal (Debian/Ubuntu)|
+|`/etc/bind/named.conf.options`|Opciones globales del servidor (en Debian/Ubuntu se divide en varios ficheros)|
+|`/etc/bind/named.conf.local`|Definición de zonas locales|
+|`/var/named/` o `/etc/bind/`|Directorio donde se almacenan los ficheros de zona|
+
+### Secciones principales de `named.conf`
+
+#### Bloque `options`
+
+Controla el comportamiento global del servidor:
+
+```
+options {
+    directory "/var/cache/bind";        // Directorio de trabajo de named
+
+    listen-on { 127.0.0.1; 192.168.1.1; };   // IPs en las que escucha (puerto 53 UDP/TCP)
+    listen-on-v6 { none; };             // Deshabilitar IPv6 si no se necesita
+
+    allow-query { 192.168.1.0/24; };    // IPs autorizadas a hacer consultas
+    allow-recursion { 192.168.1.0/24; }; // IPs que pueden pedir resolución recursiva
+    allow-transfer { none; };           // Deshabilitar transferencias de zona por defecto
+
+    forwarders {
+        8.8.8.8;                        // Google DNS
+        1.1.1.1;                        // Cloudflare DNS
+    };
+    forward only;                       // No intentar resolución propia; reenviar siempre
+
+    dnssec-validation auto;             // Validar DNSSEC automáticamente
+    recursion yes;                      // Permitir consultas recursivas
+};
+```
+
+Diferencia entre `forward first` y `forward only`:
+
+|Opción|Comportamiento|
+|---|---|
+|`forward first`|Consulta primero a los _forwarders_. Si no responden, intenta la resolución recursiva directa (valor por defecto)|
+|`forward only`|Reenvía siempre a los _forwarders_ y nunca intenta resolución propia|
+
+#### Bloque `zone`
+
+Define las zonas que gestiona el servidor e indica si actúa como `master` (primario) o `slave` (secundario):
+
+```
+// Zona directa — servidor primario
+zone "ejemplo.com" {
+    type master;
+    file "/etc/bind/db.ejemplo.com";
+    allow-transfer { 192.168.1.2; };    // Permitir transferencia solo al servidor esclavo
+};
+
+// Zona inversa — servidor primario
+zone "1.168.192.in-addr.arpa" {
+    type master;
+    file "/etc/bind/db.192.168.1";
+};
+
+// Zona directa — servidor secundario
+zone "ejemplo.com" {
+    type slave;
+    masters { 192.168.1.1; };
+    file "/var/cache/bind/db.ejemplo.com.slave";
+};
+```
+
+### Ejemplo de fichero de zona directa
+
+```
+$TTL 86400
+@   IN  SOA  ns1.ejemplo.com.  admin.ejemplo.com. (
+        2024010501  ; Serial
+        3600        ; Refresh
+        900         ; Retry
+        604800      ; Expire
+        300 )       ; Negative TTL
+
+; Servidores de nombres
+@       IN  NS   ns1.ejemplo.com.
+@       IN  NS   ns2.ejemplo.com.
+
+; Registros A (IPv4)
+ns1     IN  A    192.168.1.1
+ns2     IN  A    192.168.1.2
+@       IN  A    192.168.1.10
+www     IN  A    192.168.1.10
+mail    IN  A    192.168.1.20
+
+; Alias
+ftp     IN  CNAME  www.ejemplo.com.
+
+; Correo
+@       IN  MX   10  mail.ejemplo.com.
+
+; Registro TXT (verificación de dominio / SPF)
+@       IN  TXT  "v=spf1 mx -all"
+```
+
+### Gestión del servicio
+
+```bash
+systemctl start named          # Inicia el servidor
+systemctl enable named         # Habilita el inicio automático
+systemctl reload named         # Recarga la configuración sin interrumpir el servicio
+
+rndc reload                    # Recarga zonas mediante la herramienta de control de named
+rndc reload ejemplo.com        # Recarga solo una zona específica
+rndc status                    # Estado del servidor named
+```
+
+> `rndc` (_Remote Name Daemon Control_) es la herramienta de administración en tiempo real de BIND, preferida a reiniciar el proceso completo para aplicar cambios en zonas.
+
+---
+
 ## Diagnóstico de DNS
-Podemos usar `name-checkzone`y `named-checkconf` para verificar la sintaxis de los ficheros de zonas y configuración BIND respectivamente. El servidor de BIND se denomina `named`.
-El comando `host` muestra los registros A, CNAME y PTR de un servidor.
-`nslookup` ha sido _deprecated_ pero se sigue usando bastante. El comando `dig`es similar a los anteriores pero la información aparece depurada.
-## Configuración de la transferencia de zona con DNSSEC
-La transferencia de zona es cuando un servidor esclavo en modo solo lectura deba sincronizarse con el maestro para recibir las actualizaciones que pueda sufrir.
-Se configura en `/etc/named.conf`, pero es vulnerable a ataques al no tener encriptación. Se puede configurar para que se use un modo seguro (DNSSEC).
-Generamos dos ficheros de claves pública y privada que se usarán para la encriptación. La clave pública se reparte entre los servidores que van a recibir la transferencia y la privada se usa para firmar usando el comando `dnssec-signzone`.
-El fichero encriptado que se genera será el que se use como fichero de zona, actualizándolo en `/etc/named.conf`.
+
+### Herramientas de validación de BIND
+
+|Comando|Función|
+|---|---|
+|`named-checkconf`|Verifica la sintaxis de `/etc/named.conf` y los ficheros que incluye. **No comprueba semántica, solo sintaxis**|
+|`named-checkzone <zona> <fichero>`|Verifica la sintaxis y consistencia de un fichero de zona concreto|
+|`named-compilezone`|Similar a `named-checkzone` pero vuelca el contenido de la zona en un formato diferente (útil para conversión)|
+
+```bash
+named-checkconf                                          # Comprueba named.conf
+named-checkconf /etc/named.conf                         # Explícito
+named-checkzone ejemplo.com /etc/bind/db.ejemplo.com   # Comprueba un fichero de zona
+```
+
+> **Buena práctica:** ejecutar siempre `named-checkconf` y `named-checkzone` antes de recargar el servicio. Un error de sintaxis en un fichero de zona puede dejar el servidor sin responder a esa zona.
+
+### Herramientas de consulta DNS
+
+#### `dig` — La herramienta recomendada
+
+`dig` (_Domain Information Groper_) es la herramienta de referencia para consultar servidores DNS. Su salida es detallada, estructurada y fácil de parsear. Forma parte del paquete `bind-utils` / `bind9-utils`. Referencia: [`man 1 dig`](https://linux.die.net/man/1/dig)
+
+```bash
+dig ejemplo.com                          # Consulta el registro A por defecto
+dig ejemplo.com MX                       # Consulta registros MX
+dig ejemplo.com NS                       # Servidores de nombres de la zona
+dig -x 192.168.1.10                      # Consulta inversa (PTR)
+dig @8.8.8.8 ejemplo.com                 # Consulta a un servidor DNS específico
+dig ejemplo.com +short                   # Salida mínima (solo el resultado)
+dig ejemplo.com +noall +answer           # Solo la sección Answer
+dig ejemplo.com AXFR @ns1.ejemplo.com   # Solicita una transferencia de zona completa
+dig ejemplo.com +dnssec                  # Incluye registros DNSSEC en la respuesta
+```
+
+#### `host` — Consultas simples
+
+`host` proporciona consultas rápidas y salida compacta. Muestra por defecto los registros A, AAAA y MX.
+
+```bash
+host ejemplo.com                         # Registros A, AAAA y MX
+host -t CNAME www.ejemplo.com            # Registro CNAME específico
+host 192.168.1.10                        # Resolución inversa
+host ejemplo.com 8.8.8.8                 # Consultar un servidor concreto
+```
+
+#### `nslookup` — Compatibilidad
+
+La documentación oficial de BIND desaconseja el uso de `nslookup` por su interfaz arcana y su comportamiento frecuentemente inconsistente, y recomienda usar `dig` en su lugar. Sin embargo, `nslookup` sigue siendo muy conocido porque también está disponible en Windows, lo que lo hace útil para diagnósticos multiplataforma.
+
+```bash
+nslookup ejemplo.com                     # Consulta básica
+nslookup -type=MX ejemplo.com           # Tipo de registro específico
+nslookup ejemplo.com 8.8.8.8            # Servidor DNS específico
+```
+
+### Tabla resumen de herramientas de diagnóstico
+
+|Herramienta|Uso recomendado|Observaciones|
+|---|---|---|
+|`dig`|**Principal**: diagnóstico detallado, scripting, verificación de DNSSEC|Salida completa y estructurada|
+|`host`|Consultas rápidas y simples|Salida compacta|
+|`nslookup`|Compatibilidad con Windows o usuarios habituados|Desaconsejado por BIND en favor de `dig`|
+|`named-checkconf`|Validar sintaxis de `named.conf` antes de recargar|Solo sintaxis, no semántica|
+|`named-checkzone`|Validar ficheros de zona antes de recargar|Detecta registros malformados|
+|`rndc`|Administración en caliente del servidor BIND|Preferido a reinicios del servicio|
+
+---
+
+## Transferencia de zona y DNSSEC
+
+### Transferencia de zona
+
+La **transferencia de zona** es el mecanismo mediante el cual un servidor esclavo se sincroniza con el maestro para obtener actualizaciones. Hay dos tipos:
+
+|Tipo|Descripción|
+|---|---|
+|**AXFR** (_Full Zone Transfer_)|Transfiere la zona completa. Se usa en la primera sincronización o cuando el diferencial no está disponible|
+|**IXFR** (_Incremental Zone Transfer_)|Solo transfiere los cambios desde el último serial conocido. Más eficiente en zonas grandes|
+
+La transferencia se configura en el bloque `zone` de `named.conf` mediante `allow-transfer`. Sin restricciones, cualquier servidor podría solicitar una copia completa de la zona, lo que supone un riesgo de reconocimiento (_zone enumeration_).
+
+### Seguridad: TSIG (Transaction Signature)
+
+**TSIG** (_Transaction Signatures_, [RFC 2845](https://www.rfc-editor.org/rfc/rfc2845)) es el mecanismo estándar para autenticar transferencias de zona y actualizaciones dinámicas mediante una **clave secreta compartida** (HMAC). Es más sencillo de desplegar que DNSSEC para proteger las comunicaciones servidor-a-servidor.
+
+Generar una clave TSIG con `tsig-keygen`:
+
+```bash
+tsig-keygen -a HMAC-SHA256 clave-maestro-esclavo
+```
+
+Salida (bloque para incluir en `named.conf` de ambos servidores):
+
+```
+key "clave-maestro-esclavo" {
+    algorithm hmac-sha256;
+    secret "base64==";
+};
+```
+
+Configurar la transferencia usando la clave:
+
+```
+// En el maestro
+zone "ejemplo.com" {
+    type master;
+    allow-transfer { key "clave-maestro-esclavo"; };
+};
+
+// En el esclavo
+zone "ejemplo.com" {
+    type slave;
+    masters { 192.168.1.1 key "clave-maestro-esclavo"; };
+};
+```
+
+### DNSSEC
+
+**DNSSEC** (_DNS Security Extensions_, [RFC 4033–4035](https://www.rfc-editor.org/rfc/rfc4033)) añade **autenticación criptográfica** a las respuestas DNS mediante firma digital. Protege frente a ataques de envenenamiento de caché (_cache poisoning_) y falsificación de respuestas.
+
+DNSSEC no cifra el tráfico DNS; garantiza la **integridad y autenticidad** de los registros.
+
+#### Tipos de claves DNSSEC
+
+|Clave|Nombre|Función|
+|---|---|---|
+|**KSK**|_Key Signing Key_|Firma la clave ZSK. Se cambia con poca frecuencia y su hash (registro DS) se registra en la zona padre|
+|**ZSK**|_Zone Signing Key_|Firma el resto de registros de la zona. Se rota con mayor frecuencia|
+
+#### Proceso de firma de una zona con BIND
+
+**1. Generar las claves:**
+
+```bash
+# Generar la KSK (Key Signing Key)
+dnssec-keygen -a ECDSAP256SHA256 -b 256 -f KSK -n ZONE ejemplo.com
+
+# Generar la ZSK (Zone Signing Key)
+dnssec-keygen -a ECDSAP256SHA256 -b 256 -n ZONE ejemplo.com
+```
+
+Cada llamada genera dos ficheros: `Kejemplo.com.+NNN+XXXXX.key` (clave pública) y `Kejemplo.com.+NNN+XXXXX.private` (clave privada).
+
+**2. Firmar la zona:**
+
+```bash
+# Incluir las claves públicas en el fichero de zona antes de firmar
+cat Kejemplo.com.*.key >> /etc/bind/db.ejemplo.com
+
+# Firmar la zona (genera db.ejemplo.com.signed)
+dnssec-signzone -o ejemplo.com -k Kejemplo.com.+NNN+XXXXX.key \
+    /etc/bind/db.ejemplo.com Kejemplo.com.+NNN+XXXXX.key
+```
+
+**3. Actualizar `named.conf`** para apuntar al fichero firmado:
+
+```
+zone "ejemplo.com" {
+    type master;
+    file "/etc/bind/db.ejemplo.com.signed";
+};
+```
+
+**4. Publicar el registro DS** en la zona padre (el registro DS es el hash de la KSK y es lo que establece la cadena de confianza hacia abajo en la jerarquía DNS).
+
+> **Nota:** En BIND moderno (versión 9.16+) el proceso de firma puede automatizarse completamente con la directiva `dnssec-policy` en `named.conf`, que gestiona la generación de claves, la firma y la rotación automáticamente sin necesidad de ejecutar `dnssec-keygen` ni `dnssec-signzone` manualmente.
+
+#### Activar la validación DNSSEC en el resolvedor
+
+Para que el servidor valide las respuestas firmadas al hacer resolución recursiva:
+
+```
+options {
+    dnssec-validation auto;   // Usa el ancla de confianza incluida en BIND para la raíz
+};
+```
+
+---
+
+## El resolvedor del cliente: `/etc/resolv.conf`
+
+En el lado del cliente, el sistema consulta los servidores DNS indicados en `/etc/resolv.conf`:
+
+```
+nameserver 192.168.1.1
+nameserver 8.8.8.8
+search ejemplo.com local.lan    # Dominios de búsqueda para nombres cortos
+```
+
+> **Nota:** En sistemas modernos con **systemd-resolved**, `/etc/resolv.conf` es gestionado automáticamente como un enlace simbólico. No debe editarse directamente; se configura con `resolvectl` o a través de NetworkManager.
+
+```bash
+resolvectl status               # Estado del resolvedor systemd
+resolvectl query ejemplo.com   # Consulta usando el resolvedor del sistema
+```
+
+# 7. Configuración de servicios avanzados de red
+
+---
+
+## Configuración de un servidor DHCP
+
+[DHCP](https://es.ccm.net/aplicaciones-e-internet/museo-de-internet/enciclopedia/11104-que-es-el-protocolo-dhcp-y-para-que-sirve/) (_Dynamic Host Configuration Protocol_) es un protocolo TCP/IP que asigna automáticamente una configuración de red a los equipos de una LAN: dirección IP, máscara de subred, puerta de enlace, servidor DNS, nombre de dominio y otros parámetros. Está definido en el [RFC 2131](https://www.rfc-editor.org/rfc/rfc2131).
+
+### Implementaciones de servidor DHCP
+
+|Software|Descripción|
+|---|---|
+|[**ISC DHCP**](https://www.isc.org/dhcp/) (`isc-dhcp-server` / `dhcp`)|La implementación más extendida históricamente. Mantenida por el ISC. Incluye servidor (`dhcpd`), cliente (`dhclient`) y agente relay (`dhcrelay`)|
+|[**Kea**](https://www.isc.org/kea/)|El sucesor moderno de ISC DHCP, también del ISC. Arquitectura modular, API REST y base de datos de concesiones en MySQL/PostgreSQL. Recomendado para nuevas instalaciones|
+|[**dnsmasq**](https://thekelleys.org.uk/dnsmasq/doc.html)|Servidor ligero que combina DNS, DHCP y TFTP. Integra automáticamente los hosts con IP dinámica en el servidor DNS local. Muy usado en redes pequeñas y entornos de laboratorio|
+
+> **Nota sobre ISC DHCP:** el ISC anunció el fin de vida (_End of Life_) de ISC DHCP en 2022. Para nuevas instalaciones se recomienda usar **Kea**, su sucesor oficial.
+
+### Instalación y ficheros clave
+
+```bash
+sudo apt install isc-dhcp-server    # Debian / Ubuntu
+sudo dnf install dhcp-server        # RHEL / Fedora / CentOS
+```
+
+|Fichero / ruta|Descripción|
+|---|---|
+|`/etc/dhcp/dhcpd.conf`|Fichero de configuración principal|
+|`/var/lib/dhcpd/dhcpd.leases`|Base de datos de concesiones activas (RHEL/Fedora)|
+|`/var/lib/dhcp/dhcpd.leases`|Base de datos de concesiones activas (Debian/Ubuntu)|
+
+La base de datos de concesiones se actualiza continuamente y registra qué IP ha sido asignada a cada cliente (identificado por su dirección MAC), junto con los tiempos de inicio y expiración de cada concesión.
+
+### Estructura de `dhcpd.conf`
+
+El fichero se compone de dos categorías de sentencias: **parámetros** y **declaraciones**.
+
+- Los **parámetros** indican cómo realizar una tarea, si debe realizarse o qué opciones de configuración de red se envían al cliente. Los que comienzan con la palabra clave `option` corresponden a opciones DHCP estándar (RFC); los que no, controlan el comportamiento del propio servidor.
+- Las **declaraciones** describen la topología de red y los clientes: definen rangos de direcciones a asignar o aplican un grupo de parámetros a un conjunto de declaraciones.
+
+Los parámetros globales (antes de cualquier bloque `{}`) se aplican a todos los clientes. Los que aparecen dentro de un bloque `subnet` o `host` solo afectan a ese ámbito.
+
+### Ejemplo completo de `dhcpd.conf`
+
+```
+# Parámetros globales
+option domain-name "ejemplo.com";
+option domain-name-servers 192.168.1.10, 8.8.8.8;
+
+default-lease-time 3600;     # Duración de la concesión si el cliente no especifica (segundos)
+max-lease-time 86400;        # Duración máxima permitida para una concesión
+
+authoritative;               # Este servidor es autoritativo para la red: envía DHCPNAK a clientes
+                             # que solicitan IPs fuera del rango configurado
+log-facility local7;
+
+# Declaración de subred: obligatoria para cada interfaz del servidor
+subnet 192.168.1.0 netmask 255.255.255.0 {
+    range 192.168.1.100 192.168.1.200;        # Rango dinámico de IPs a asignar
+    option routers 192.168.1.1;               # Puerta de enlace
+    option subnet-mask 255.255.255.255;
+    option broadcast-address 192.168.1.255;
+    option ntp-servers 192.168.1.10;          # Servidor NTP
+}
+
+# IP fija para un host específico por dirección MAC
+host servidor-web {
+    hardware ethernet 08:00:27:ab:cd:ef;
+    fixed-address 192.168.1.50;
+}
+```
+
+> **Nota:** `dhcpd` solo escucha en las interfaces para las que existe una declaración `subnet` que coincida con la IP de esa interfaz. Si una interfaz no tiene declaración de subred, el servidor no escucha en ella.
+
+### Verificación y gestión del servicio
+
+```bash
+dhcpd -t -cf /etc/dhcp/dhcpd.conf   # Verifica la sintaxis antes de reiniciar (¡siempre hacer esto!)
+systemctl restart isc-dhcp-server    # Debian / Ubuntu
+systemctl restart dhcpd              # RHEL / Fedora
+
+# Consultar concesiones activas
+cat /var/lib/dhcp/dhcpd.leases
+grep "binding state active" /var/lib/dhcp/dhcpd.leases | wc -l   # Contar concesiones activas
+```
+
+### DHCP Relay: `dhcrelay`
+
+En redes segmentadas (con VLANs o subredes separadas), los mensajes DHCP son broadcasts que no atraviesan los rúters. El **agente DHCP Relay** (`dhcrelay`) soluciona esto: recibe los broadcasts DHCP en una subred y los reenvía como unicast al servidor DHCP en otra subred.
+
+```bash
+dhcrelay -i eth0 192.168.1.1    # Retransmite peticiones DHCP recibidas en eth0 al servidor 192.168.1.1
+```
+
+---
+
+## Gestión básica de cuentas LDAP
+
+[LDAP](https://docs.redhat.com/en/documentation/red_hat_enterprise_linux/7/html/system-level_authentication_guide/openldap) (_Lightweight Directory Access Protocol_) es un protocolo de nivel de aplicación que permite el acceso a un servicio de directorio jerárquico y distribuido. Es el estándar para la gestión centralizada de identidades en redes corporativas: usuarios, grupos, equipos, impresoras, etc.
+
+### Conceptos clave
+
+|Concepto|Descripción|
+|---|---|
+|**DIT** (_Directory Information Tree_)|Estructura jerárquica en forma de árbol que organiza toda la información del directorio|
+|**DN** (_Distinguished Name_)|Identificador único y completo de una entrada en el DIT (p. ej. `uid=jdoe,ou=usuarios,dc=ejemplo,dc=com`)|
+|**RDN** (_Relative Distinguished Name_)|La parte del DN que identifica la entrada dentro de su nivel (p. ej. `uid=jdoe`)|
+|**Entrada** (_Entry_)|Cada nodo del DIT. Está formado por un conjunto de atributos definidos por su _objectClass_|
+|**LDIF** (_LDAP Data Interchange Format_)|Formato de texto estándar para representar entradas y cambios en un directorio LDAP. Es el formato de intercambio de datos|
+
+Los niveles superiores del DIT suelen seguir la estructura de nombres DNS. Por ejemplo, el dominio `ejemplo.com` se representa como `dc=ejemplo,dc=com`. Por debajo aparecen unidades organizativas (`ou=`), usuarios (`uid=`), grupos (`cn=`), etc.
+
+### OpenLDAP
+
+[OpenLDAP](https://www.openldap.org/) es la implementación libre y de código abierto del protocolo LDAP más usada en Linux. Consta de un servidor (`slapd`, _Stand-alone LDAP Daemon_) y un conjunto de utilidades cliente.
+
+**Ficheros de configuración:**
+
+|Fichero / ruta|Descripción|
+|---|---|
+|`/etc/openldap/slapd.d/` o `cn=config`|Configuración del servidor `slapd` en el formato moderno (_online configuration_). No debe editarse directamente; se modifica con `ldapmodify`|
+|`/etc/openldap/ldap.conf`|Configuración de las utilidades cliente (servidor por defecto, base DN, etc.)|
+|`/etc/ldap/schema/`|Ficheros de esquema que definen los tipos de objetos y atributos disponibles|
+
+> **Nota sobre la configuración de slapd:** el fichero `slapd.conf` clásico ha sido sustituido por un sistema de configuración dinámica almacenado en el propio directorio bajo `cn=config`. Aunque los ficheros de configuración de `slapd-config` se almacenan como ficheros LDIF en texto plano, **nunca deben editarse directamente**. Los cambios deben realizarse a través de operaciones LDAP como `ldapadd`, `ldapdelete` o `ldapmodify`.
+
+### Utilidades cliente de OpenLDAP
+
+Las principales utilidades de cliente son:
+
+|Comando|Función|
+|---|---|
+|`ldapadd`|Añade entradas al directorio desde un fichero LDIF|
+|`ldapmodify`|Modifica entradas existentes del directorio|
+|`ldapdelete`|Elimina entradas del directorio|
+|`ldapsearch`|Realiza búsquedas en el directorio|
+|`ldappasswd`|Cambia la contraseña de un usuario LDAP|
+
+### Ejemplo de fichero LDIF
+
+```ldif
+# Añadir un usuario
+dn: uid=jdoe,ou=usuarios,dc=ejemplo,dc=com
+objectClass: inetOrgPerson
+objectClass: posixAccount
+uid: jdoe
+cn: John Doe
+sn: Doe
+uidNumber: 1001
+gidNumber: 1001
+homeDirectory: /home/jdoe
+loginShell: /bin/bash
+userPassword: {SSHA}hashedpassword==
+```
+
+```bash
+# Añadir la entrada al directorio
+ldapadd -x -D "cn=admin,dc=ejemplo,dc=com" -W -f nuevo_usuario.ldif
+
+# Buscar un usuario
+ldapsearch -x -b "dc=ejemplo,dc=com" "(uid=jdoe)"
+
+# Buscar todos los usuarios
+ldapsearch -x -b "ou=usuarios,dc=ejemplo,dc=com" "(objectClass=posixAccount)"
+```
+
+---
+
+## Configuración de Linux como rúter y firewall
+
+Para que un equipo Linux actúe como rúter entre varias redes, necesita al menos dos interfaces de red y tener habilitado el **IP forwarding** (ver Punto 5). Además, es necesario configurar las reglas de firewall y, habitualmente, NAT.
+
+### El subsistema Netfilter
+
+**Netfilter** es el subsistema del kernel de Linux que proporciona filtrado de paquetes con o sin estado, NAT y modificación de cabeceras IP. Desde él se gestionan todas las reglas de firewall. Referencia oficial: [Netfilter Project](https://www.netfilter.org/)
+
+A lo largo del tiempo, Netfilter ha tenido dos interfaces de usuario principales:
+
+|Herramienta|Estado|Descripción|
+|---|---|---|
+|`iptables`|**Obsoleta** (mantenida por compatibilidad)|La herramienta clásica. Requiere herramientas separadas para IPv4 (`iptables`), IPv6 (`ip6tables`), ARP (`arptables`) y bridges (`ebtables`)|
+|`nftables` / `nft`|**Actual** (predeterminada desde RHEL 8, Debian 10, Ubuntu 20.04)|Sustituto unificado de todas las anteriores. IPv4 e IPv6 en un solo conjunto de reglas, sintaxis más limpia y mejor rendimiento|
+
+> **`iptables` en sistemas modernos:** en las distribuciones actuales, el comando `iptables` es en realidad un alias de `iptables-legacy` o una capa de compatibilidad sobre `nftables` (`iptables-nft`). Para nueva configuración se debe usar `nft` directamente.
+
+### `iptables`: concepto y estructura (referencia histórica)
+
+`iptables` organiza las reglas en **tablas** y **cadenas**:
+
+|Tabla|Propósito|
+|---|---|
+|`filter`|Filtrado de paquetes (la tabla por defecto)|
+|`nat`|Traducción de direcciones de red (NAT, MASQUERADE)|
+|`mangle`|Modificación de cabeceras de paquetes|
+
+Cadenas principales de la tabla `filter`:
+
+|Cadena|Tráfico que procesa|
+|---|---|
+|`INPUT`|Paquetes destinados al propio equipo|
+|`OUTPUT`|Paquetes originados en el propio equipo|
+|`FORWARD`|Paquetes que pasan a través del equipo (enrutados)|
+
+Sintaxis básica:
+
+```bash
+iptables -A INPUT -p tcp --dport 22 -j ACCEPT       # Permite SSH entrante
+iptables -A INPUT -p tcp --dport 80 -j ACCEPT       # Permite HTTP
+iptables -A INPUT -j DROP                           # Descarta todo lo demás
+iptables -L -n -v                                   # Lista las reglas actuales
+```
+
+### `nftables`: la herramienta moderna
+
+`nftables` unifica el filtrado de IPv4, IPv6, ARP y bridges en una sola herramienta (`nft`). A diferencia de `iptables`, no tiene tablas ni cadenas predefinidas: se crean solo las que se necesitan. Referencia: [nftables wiki](https://wiki.nftables.org/)
+
+**Conceptos fundamentales:**
+
+```
+Familia de direcciones (ip, ip6, inet, arp, bridge)
+    └── Tabla (contenedor de cadenas y sets)
+            └── Cadena (contenedor de reglas, enganchada a un hook del kernel)
+                    └── Regla (condición + acción)
+```
+
+La familia `inet` (IPv4 + IPv6 combinados) es la recomendada para la mayoría de configuraciones de servidor.
+
+**Ejemplo de firewall básico con `nftables`:**
+
+```
+# /etc/nftables.conf
+flush ruleset
+
+table inet filter {
+    chain input {
+        type filter hook input priority 0; policy drop;
+
+        iif lo accept                          # Permitir tráfico de loopback
+        ct state established,related accept    # Permitir respuestas a conexiones ya establecidas
+        ct state invalid drop                  # Descartar paquetes con estado inválido
+        ip protocol icmp accept                # Permitir ICMP (ping IPv4)
+        ip6 nexthdr icmpv6 accept              # Permitir ICMPv6 (ping IPv6)
+        tcp dport 22 accept                    # Permitir SSH
+        tcp dport { 80, 443 } accept           # Permitir HTTP y HTTPS
+    }
+
+    chain forward {
+        type filter hook forward priority 0; policy drop;
+    }
+
+    chain output {
+        type filter hook output priority 0; policy accept;
+    }
+}
+```
+
+```bash
+nft -f /etc/nftables.conf          # Aplica el fichero de reglas
+nft list ruleset                   # Lista todas las reglas activas
+systemctl enable --now nftables    # Habilita y activa nftables con systemd
+```
+
+> **Importante:** la configuración de firewall con herramientas de GUI (como `firewalld` o `ufw`) y con scripts de `nft`/`iptables` directamente **son incompatibles**: pueden sobreescribirse mutuamente. Hay que elegir una sola forma de gestionar el firewall.
+
+### Configuración de NAT (_Network Address Translation_)
+
+NAT permite que equipos con IPs privadas (no enrutables en Internet) accedan a redes públicas usando la IP pública del rúter. El tipo más usado es **IP Masquerade** (SNAT dinámico): el rúter sustituye la IP origen privada por su propia IP pública y mantiene una tabla de seguimiento de conexiones para saber a qué cliente interior reenviar cada respuesta.
+
+**Con `nftables` (recomendado):**
+
+```bash
+# Habilitar IP Forwarding (permanente)
+echo "net.ipv4.ip_forward = 1" | sudo tee /etc/sysctl.d/99-forwarding.conf
+sysctl -p /etc/sysctl.d/99-forwarding.conf
+
+# Añadir la regla de masquerade (la interfaz de salida a Internet es enp3s0)
+nft add table ip nat
+nft add chain ip nat postrouting '{ type nat hook postrouting priority 100; }'
+nft add rule ip nat postrouting oifname "enp3s0" masquerade
+```
+
+**Con `iptables` (referencia clásica):**
+
+```bash
+iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE
+```
+
+### Protocolo de enrutamiento RIP
+
+Para que los rúters compartan información sobre las subredes disponibles se usan **protocolos de enrutamiento dinámico**. El más sencillo es **RIP** (_Routing Information Protocol_). En Linux, el demonio `routed` implementa RIPv1, mientras que el paquete [**Quagga**](https://www.quagga.net/) (o su sucesor [**FRRouting**](https://frrouting.org/)) implementa RIPv1/v2, OSPF, BGP y otros protocolos de enrutamiento avanzados.
+
+---
+
+## Implementación de SSH
+
+**SSH** (_Secure Shell_) es un protocolo de red que proporciona acceso remoto cifrado a sistemas Unix/Linux, así como transferencia segura de ficheros y tunelización de tráfico. Está definido en el [RFC 4251](https://www.rfc-editor.org/rfc/rfc4251). La implementación libre más usada es [**OpenSSH**](https://www.openssh.com/). Referencia Red Hat: [Configuring OpenSSH](https://docs.redhat.com/es/documentation/red_hat_enterprise_linux/8/html/configuring_basic_system_settings/configuring-and-starting-an-openssh-server_using-secure-communications-between-two-systems-with-openssh)
+
+### Ficheros de configuración
+
+|Fichero|Descripción|
+|---|---|
+|`/etc/ssh/sshd_config`|Configuración del **servidor** SSH (`sshd`)|
+|`/etc/ssh/ssh_config`|Configuración por defecto del **cliente** SSH para todos los usuarios del sistema|
+|`~/.ssh/config`|Configuración del cliente SSH específica del usuario (tiene prioridad sobre `ssh_config`)|
+|`~/.ssh/known_hosts`|Claves públicas de los servidores remotos que el usuario ha aceptado previamente|
+|`~/.ssh/authorized_keys`|Claves públicas de clientes autorizados a conectarse a esta cuenta sin contraseña|
+
+### Funcionamiento del cifrado en SSH
+
+SSH usa **criptografía asimétrica** para dos propósitos distintos:
+
+1. **Autenticación del servidor:** el servidor tiene su propio par de claves (las _host keys_, en `/etc/ssh/`). Cuando un cliente se conecta por primera vez, acepta y guarda la clave pública del servidor en `~/.ssh/known_hosts`. En conexiones sucesivas, verifica que la clave del servidor no haya cambiado (protección frente a ataques _man-in-the-middle_).
+2. **Autenticación del cliente:** el método más seguro es la autenticación por clave pública. El cliente genera su par de claves; la pública se instala en el servidor (en `~/.ssh/authorized_keys` de la cuenta de destino) y la privada nunca sale del cliente.
+
+Una vez autenticadas ambas partes, la sesión se cifra con **criptografía simétrica** (p. ej. AES) negociada durante el intercambio inicial.
+
+### Generación de claves con `ssh-keygen`
+
+```bash
+# Generar un par de claves Ed25519 (algoritmo moderno y recomendado)
+ssh-keygen -t ed25519 -C "comentario_identificativo"
+
+# Generar RSA de 4096 bits (compatible con sistemas más antiguos)
+ssh-keygen -t rsa -b 4096 -f ~/.ssh/id_rsa_servidor
+
+# Generar claves para el servidor (las host keys)
+ssh-keygen -t ed25519 -f /etc/ssh/ssh_host_ed25519_key
+```
+
+Los algoritmos recomendados en 2024+ son **Ed25519** (el más moderno y eficiente) y **ECDSA**. RSA sigue siendo ampliamente compatible pero requiere claves de al menos 3072 bits para considerarse seguro.
+
+**Permisos correctos para los ficheros de claves** (SSH rechaza claves con permisos demasiado abiertos):
+
+|Fichero|Permisos|Propietario|
+|---|---|---|
+|Clave **privada** del cliente (`~/.ssh/id_ed25519`)|`600`|el usuario|
+|Clave **pública** del cliente (`~/.ssh/id_ed25519.pub`)|`644`|el usuario|
+|Directorio `~/.ssh/`|`700`|el usuario|
+|`~/.ssh/authorized_keys`|`600`|el usuario|
+|Claves **privadas** del servidor (`/etc/ssh/ssh_host_*`)|`600`|`root`|
+|Claves **públicas** del servidor (`/etc/ssh/ssh_host_*.pub`)|`644`|`root`|
+
+> **Corrección respecto a los apuntes originales:** los permisos estaban intercambiados. La clave **privada** debe ser `600` (solo el propietario puede leerla y escribirla) y la **pública** `644`. Si la clave privada tiene permisos más abiertos, OpenSSH se negará a usarla.
+
+### Instalar la clave pública en el servidor
+
+La forma recomendada es usar `ssh-copy-id`, que gestiona automáticamente los permisos correctos:
+
+```bash
+ssh-copy-id usuario@servidor.ejemplo.com             # Copia la clave pública por defecto
+ssh-copy-id -i ~/.ssh/id_ed25519.pub usuario@servidor  # Especifica el fichero de clave
+```
+
+Equivalente manual (si `ssh-copy-id` no está disponible):
+
+```bash
+cat ~/.ssh/id_ed25519.pub | ssh usuario@servidor "mkdir -p ~/.ssh && chmod 700 ~/.ssh && cat >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys"
+```
+
+### Acceso remoto con `ssh`
+
+```bash
+ssh servidor.ejemplo.com                       # Conecta como el usuario actual
+ssh usuario@servidor.ejemplo.com               # Especifica el usuario
+ssh -p 2222 usuario@servidor.ejemplo.com       # Puerto no estándar
+ssh -i ~/.ssh/id_ed25519 usuario@servidor      # Especifica el fichero de clave privada
+```
+
+La primera conexión a un servidor nuevo muestra su huella (_fingerprint_) para que el administrador la verifique. Al aceptarla, se añade a `~/.ssh/known_hosts`.
+
+> Si la clave del servidor cambia (p. ej. por una reinstalación), SSH mostrará una advertencia de seguridad. Puede eliminarse la entrada antigua con: `ssh-keygen -R servidor.ejemplo.com`
+
+### Copia segura de ficheros: `scp` y `rsync`
+
+```bash
+# scp: copia puntual de ficheros
+scp fichero.txt usuario@servidor:/ruta/destino/          # Local → remoto
+scp usuario@servidor:/ruta/fichero.txt ./local/          # Remoto → local
+scp -r directorio/ usuario@servidor:/destino/            # Copia recursiva de directorio
+
+# rsync sobre SSH: sincronización eficiente (solo transfiere cambios)
+rsync -avz -e ssh directorio/ usuario@servidor:/destino/ # Sincronización remota
+```
+
+> `rsync` es preferible a `scp` para transferencias grandes o repetidas, ya que solo copia los ficheros que han cambiado.
+
+### Parámetros clave de `sshd_config`
+
+```bash
+# Editar la configuración del servidor
+sudo nano /etc/ssh/sshd_config
+
+# Aplicar los cambios sin interrumpir sesiones activas
+sudo systemctl reload sshd
+```
+
+Parámetros más importantes para la seguridad:
+
+|Parámetro|Valor recomendado|Descripción|
+|---|---|---|
+|`PermitRootLogin`|`no`|Deshabilita el inicio de sesión directo como root|
+|`PasswordAuthentication`|`no`|Deshabilita la autenticación por contraseña (solo claves)|
+|`PubkeyAuthentication`|`yes`|Habilita la autenticación por clave pública|
+|`Port`|(p. ej. `2222`)|Cambiar el puerto reduce el ruido de bots en los logs|
+|`AllowUsers`|`usuario1 usuario2`|Lista blanca de usuarios que pueden conectarse|
+|`MaxAuthTries`|`3`|Limita los intentos de autenticación fallidos por conexión|
+|`ClientAliveInterval`|`300`|Envía un keepalive al cliente cada 300 s para detectar sesiones caídas|
+
+> **Buena práctica:** antes de deshabilitar `PasswordAuthentication`, verificar que la autenticación por clave pública funciona correctamente en otra sesión SSH abierta, para no quedarse sin acceso.
+
+# 8. Configuración de servidores de ficheros
+## Servidores Samba
+En los sistemas de red actuales es común que convivan dispositivos Windows y Unix, y ambos deben comunicarse entre sí.
+SMB es un protocolo de red que pertenece al nivel de aplicación en el modelo OSI. Que permite compartir archivos e impresoras (entre otras cosas) entre nodos de una red. Se usa pricipalmente en ordenadores con Windows y DOS, por tanto para que un sistema linux pueda compartir archivos e impresoras, debe estar implementado este protocolo. Hay varias versiones de SMB usadas por los sistemas Windows (CIFS, que era parte de Microsoft Windows NT 4.0; SMB1 usada por Windows 2000, XP, Windows Server 2003 y Windows Server 2003 R2; SMB2, usada por Windows Vista y Windows Server 2008; SMB2.1, usada en Windows 7 y Windows Server 2008 y SMB3, para Windows 8 y Windows Server 2012).
+[Samba](https://www.samba.org/) es una implementación de código abierto de la suite de protocolos de red de Microsoft Windows. Samba es un servidor para los clientes que utilizan el protocolo Microsoft CIFS/SMB para el uso compartido de impresoras y ficheros. Hay otras opciones, como [PowerBroker Identity Services](https://powerbroker-identity-services-open.soft112.com/)
+Samba se instala usando el paquete `samba`o `samba-server`. La suite completa de Samba se compone de varios paquetes además de el mencionado:
+`samba-common`: Archivos comunes de Samba usados por clientes y servidores.
+- `smbclient`: Cliente de Samba
+- `swat`: Herramienta de administración de Samba vía web.
+- `samba-doc`: Documentación
+- `smbfs`: Comandos para montar/desmontar unidades de red Samba
+- `winbind`: Resuelve información de usuarios y grupos de servidores Windows NT.
+### Configuración de un servidor Samba
+Para configurar Samba, debemos ir al archivo `/etc/smb.conf` o `/etc/sanmba/smb.conf`. El fichero tiene secciones identificadas por un nombre entre corchetes y en cada sección se definen los valores de las distintas opciones por medio de una asignación (`=`).
+Hay 3 secciones obligatorias:
+- `[global]`: Valores por defecto que afectan al servidor en conjunto
+- `[homes]`: Permite compartir carpetas home del usuario.
+- `[printers]`: Permite compartir impresoras.
+Además de estas secciones, si queremos compartir una carpeta, debemos crear una nueva sección, cuyo nombre será el nombre del nuevo recurso compartido. [Ejemplo de fichero.](https://cdn.adrformacion.com/c/linux5/8/samba_conf.txt)
+Los sistemas Windows pueden configurarse como:
+- Grupos de trabajo, basados en NetBIOS.
+- Dominios NT, solo si el controlador de dominio es Windows NT
+- Dominios Active Directory, de Windows Server 2000 en adelante.
+Uno de los parámetros de configuración más importantes es `security`, en `[global]`. Tiene las siguientes opciones:
+- `user`: Si el servidor acepta la combinación usuario/contraseña el usuario podrá montar varios recursos compartidos sin tener que especificar una contraseña para cada instancia. Es el `default`.
+- `share`: Acepta una contraseña sin nombre de usuario explícito desde el cliente.
+- `domain`: Samba es miembro del dominio NT. Dispone de una cuenta de máquina y hace que todas las solicitudes de autenticación pasen a través de los controladores de dominio.
+- `ADS`: Si tienes AD, puedes unirte al dominio como miembro nativo de AD. Se puede unir al ADS usando Kerberos.
+- `server`: Se usa este modo si Samba no es servidor miembro del dominio.
+### Configuración de opciones de Grupos de Trabajo y Dominios
+SMB funciona sobre NetBIOS. Si no establecemos correctamente el parámetro `Workgroup`, los clientes Windows no nos encontrarán. Para saber qué grupo de trabajo está nuestra máquina, `nmblookup -MS -`.  
+LAs opciones `server`, `domain` y `ADS` no necesitan mantener cuentas de usuario Samba, pero implican cierta conectividad entre el servidr Samba y la red Windows. Para unir el servidor Samba a un dominio, primero debe configurarse ne Windws esta posibilidad y luego usarse desde el servidor Samba `net join member -U usuario_admin dominio`. Para mantener sincronizada la DB, puede usarse LDAP, compatible con el AD, o bien puede utilizarse [winbindd](https://www.samba.org/samba/docs/current/man-html/winbindd.8.html), que habilita a Linux para usar al conexión LDAP del AD.
+### Configuración de las opciones de contraseña
+En `[global]` tenemos la opción `encrypt passwords`. Si la poenmos con `No`, limitará la autenticación a la DB usuarios de Linux y ciertos clientes de Windows no podrán conectarse. Si se establece en `Yes`, Samba requerirá de su propia DB independiente de la de Linux y habrá que añadirlos con `smbpasswd -a usuario_del_sistema`. Se puede automatizar la tarea con el script `/usr/bin/mksmbpasswd`. La opción `user` debe estar habilitada y fuerza a Samba a tener su propia DB.
+### Utilidades de depuración de errores en Samba
+Hay que reiniciar el sistema Samba aplicar los cambios en la configuración. Antes de ello, podemos usar `testparam` para ayudar a depurar errores en el fichero.
+Podemos usar también desde el cliente `nmblokup` para localizar información sobre un servidor Samba. 
+La utilidad `smbstatus` informa sobre el estado actual del servidor, clientes conectados a él y ficheros abiertos.
+Una vez que Samba está funcionando, consiste principalmente en dos procesos (daemons) `/usr/bin/smbd` (Suministra servicios para compartir archivos e impresión y es responsable por la autenticación de usuarios, el boqueo y compartir daros a través del protocolo SMB) y `/usr/sbin/nmbd` (Responde a las peticiones del servicio de nombres NetBIOS tales como aquellas producidas por SMB/CIFS en sistemas basados en Windows y participa en protocolos de navegación que forman la vista Entorno de Red Windows. EL tráfico NMB se escucha por el puerto UDP 137). Los ficheros de log están en `/var/log/samba`.
+### Configuración del cliente de Samba
+Nos permite interactuar con servidores Samba o sistemas Windows usando el protocolo SMB/CIFS como cliente. El programa `smbclient` proporciona un entorno de línea de comandos similar a FTP para [acceder](https://docs.redhat.com/en/documentation/red_hat_enterprise_linux/5/html/deployment_guide/s1-samba-connect-share) a recursos compartidos.
+Con `mount` también montar los recursos compartidos Samba en nuestro sistema de ficheros. Para ello lo indicamos como tipo `cifs` (`mount -t cifs //servidor_samba/nombre_recurso /mnt/directorio`).
+## Servidores NFS
+## Servidores FTP
